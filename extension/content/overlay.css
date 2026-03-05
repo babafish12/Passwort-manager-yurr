@@ -1,0 +1,152 @@
+#yurrr-overlay {
+  display: none;
+  position: absolute;
+  z-index: 2147483647;
+  background: #1a1a2e;
+  border: 1px solid #2ecc71;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e0e0e0;
+  overflow: hidden;
+}
+
+.yurrr-overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+}
+
+.yurrr-overlay-logo {
+  font-weight: 700;
+  color: #2ecc71;
+  font-size: 13px;
+}
+
+.yurrr-overlay-subtitle {
+  font-size: 11px;
+  color: #888;
+}
+
+.yurrr-overlay-password {
+  padding: 10px 12px;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  word-break: break-all;
+  background: #0f3460;
+  margin: 8px;
+  border-radius: 4px;
+  user-select: all;
+}
+
+.yurrr-overlay-controls {
+  padding: 8px 12px 12px;
+}
+
+.yurrr-overlay-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #888;
+}
+
+.yurrr-overlay-slider-row input[type="range"] {
+  flex: 1;
+  accent-color: #2ecc71;
+}
+
+.yurrr-overlay-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.yurrr-btn-primary,
+.yurrr-btn-secondary {
+  flex: 1;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.yurrr-btn-primary {
+  background: #2ecc71;
+  color: #1a1a2e;
+}
+
+.yurrr-btn-primary:hover {
+  background: #27ae60;
+}
+
+.yurrr-btn-secondary {
+  background: #16213e;
+  color: #e0e0e0;
+  border: 1px solid #333;
+}
+
+.yurrr-btn-secondary:hover {
+  background: #1a2744;
+}
+
+/* Save prompt banner */
+#yurrr-save-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2147483647;
+  background: #1a1a2e;
+  border-bottom: 2px solid #2ecc71;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e0e0e0;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  animation: yurrr-slide-down 0.3s ease;
+}
+
+@keyframes yurrr-slide-down {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
+#yurrr-save-banner .yurrr-banner-text {
+  font-size: 14px;
+}
+
+#yurrr-save-banner .yurrr-banner-text strong {
+  color: #2ecc71;
+}
+
+#yurrr-save-banner .yurrr-banner-actions {
+  display: flex;
+  gap: 8px;
+}
+
+#yurrr-save-banner .yurrr-banner-actions button {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.yurrr-banner-save {
+  background: #2ecc71;
+  color: #1a1a2e;
+}
+
+.yurrr-banner-dismiss {
+  background: #333;
+  color: #e0e0e0;
+}

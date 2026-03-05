@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=360">
+  <title>Yurrr</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div class="header">
+      <span class="logo">Yurrr</span>
+      <div class="header-actions">
+        <button id="lock-btn" class="icon-btn hidden" title="Lock">&#128274;</button>
+      </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen">
+      <div class="status-dot" id="server-status"></div>
+      <div class="login-form">
+        <input type="password" id="master-password" placeholder="Master Password" autofocus>
+        <button id="unlock-btn" class="btn btn-primary btn-full">Unlock</button>
+      </div>
+      <div id="login-error" class="error hidden"></div>
+      <div id="setup-section" class="hidden">
+        <p class="hint">No vault found. Create one:</p>
+        <button id="setup-btn" class="btn btn-secondary btn-full">Initialize Vault</button>
+      </div>
+    </div>
+
+    <!-- Entry List Screen -->
+    <div id="list-screen" class="screen hidden">
+      <div class="search-bar">
+        <input type="text" id="search-input" placeholder="Search passwords...">
+      </div>
+      <div id="entry-list" class="entry-list"></div>
+      <button id="add-btn" class="fab">+</button>
+    </div>
+
+    <!-- Entry Detail Screen -->
+    <div id="detail-screen" class="screen hidden">
+      <div class="detail-header">
+        <button id="back-from-detail" class="icon-btn">&larr;</button>
+        <span id="detail-domain" class="detail-title"></span>
+        <div class="detail-actions">
+          <button id="edit-entry-btn" class="icon-btn" title="Edit">&#9998;</button>
+          <button id="delete-entry-btn" class="icon-btn danger" title="Delete">&#128465;</button>
+        </div>
+      </div>
+      <div class="detail-body">
+        <div class="detail-field">
+          <label>Website</label>
+          <div class="detail-value">
+            <span id="detail-url"></span>
+            <button class="copy-btn" data-copy="detail-url" title="Open">&#128279;</button>
+          </div>
+        </div>
+        <div class="detail-field">
+          <label>Username</label>
+          <div class="detail-value">
+            <span id="detail-username"></span>
+            <button class="copy-btn" data-copy="detail-username" title="Copy">&#128203;</button>
+          </div>
+        </div>
+        <div class="detail-field">
+          <label>Password</label>
+          <div class="detail-value">
+            <span id="detail-password" class="password-masked"></span>
+            <button id="toggle-password" class="copy-btn" title="Show">&#128065;</button>
+            <button class="copy-btn" data-copy="detail-password" title="Copy">&#128203;</button>
+          </div>
+        </div>
+        <div class="detail-field" id="detail-notes-field">
+          <label>Notes</label>
+          <div class="detail-value">
+            <span id="detail-notes"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add/Edit Entry Screen -->
+    <div id="form-screen" class="screen hidden">
+      <div class="detail-header">
+        <button id="back-from-form" class="icon-btn">&larr;</button>
+        <span id="form-title" class="detail-title">Add Entry</span>
+      </div>
+      <div class="form-body">
+        <div class="field">
+          <label>Website URL</label>
+          <input type="text" id="form-url" placeholder="https://example.com">
+        </div>
+        <div class="field">
+          <label>Username / Email</label>
+          <input type="text" id="form-username" placeholder="user@example.com">
+        </div>
+        <div class="field">
+          <label>Password</label>
+          <div class="password-row">
+            <input type="password" id="form-password" placeholder="Password">
+            <button id="form-toggle-pw" class="icon-btn" title="Show">&#128065;</button>
+            <button id="form-generate" class="icon-btn" title="Generate">&#127922;</button>
+          </div>
+          <div id="strength-bar" class="strength-bar">
+            <div id="strength-fill" class="strength-fill"></div>
+          </div>
+        </div>
+        <div class="field">
+          <label>Notes (optional)</label>
+          <textarea id="form-notes" rows="3" placeholder="Additional notes..."></textarea>
+        </div>
+        <div class="form-actions">
+          <button id="form-cancel" class="btn btn-secondary">Cancel</button>
+          <button id="form-save" class="btn btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="components/login.js"></script>
+  <script src="components/entry-list.js"></script>
+  <script src="components/entry-detail.js"></script>
+  <script src="components/entry-form.js"></script>
+  <script src="components/password-generator.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

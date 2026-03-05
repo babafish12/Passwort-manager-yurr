@@ -1,0 +1,6 @@
+target/
+vault.db
+vault.db-wal
+vault.db-shm
+certs/
+*.pem

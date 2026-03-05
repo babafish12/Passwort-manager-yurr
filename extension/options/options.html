@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Yurrr Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Yurrr Password Manager</h1>
+    <h2>Settings</h2>
+
+    <div class="field">
+      <label for="server-url">Server URL</label>
+      <input type="text" id="server-url" placeholder="https://192.168.1.50:8443">
+      <small>The address of your Yurrr server on your local network</small>
+    </div>
+
+    <div class="actions">
+      <button id="test-btn" class="btn btn-secondary">Test Connection</button>
+      <button id="save-btn" class="btn btn-primary">Save</button>
+    </div>
+
+    <div id="status" class="status hidden"></div>
+
+    <div class="instructions">
+      <h3>Self-Signed Certificate</h3>
+      <p>Since the server uses a self-signed certificate, you need to accept it in Brave first:</p>
+      <ol>
+        <li>Open your server URL directly in a new tab (e.g., <code>https://192.168.1.50:8443/api/v1/auth/status</code>)</li>
+        <li>Click "Advanced" then "Proceed to ... (unsafe)"</li>
+        <li>You should see a JSON response — the extension can now connect</li>
+      </ol>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
