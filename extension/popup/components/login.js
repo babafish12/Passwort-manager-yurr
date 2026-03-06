@@ -38,9 +38,19 @@ const LoginScreen = {
     }
   },
 
+  async getServerUrl() {
+    const result = await chrome.storage.local.get('yurrr_server_url');
+    return result['yurrr_server_url'] || 'https://localhost:8443';
+  },
+
   async checkStatus() {
     try {
-      const status = await sendMessage('GET_STATUS');
+      // Fetch directly from popup context (not via service worker)
+      // so the browser's cert exceptions are respected immediately
+      const serverUrl = await this.getServerUrl();
+      const resp = await fetch(`${serverUrl}/api/v1/auth/status`);
+      const status = await resp.json();
+
       this.statusDot.classList.add('online');
       this.statusDot.classList.remove('offline');
       this.hideCertHint();
@@ -68,9 +78,7 @@ const LoginScreen = {
     this.errorEl.parentNode.insertBefore(hint, this.errorEl.nextSibling);
     document.getElementById('cert-link').addEventListener('click', async (e) => {
       e.preventDefault();
-      // Get the saved server URL and open it so user can accept the cert
-      const result = await chrome.storage.local.get('yurrr_server_url');
-      const serverUrl = result['yurrr_server_url'] || 'https://localhost:8443';
+      const serverUrl = await this.getServerUrl();
       chrome.tabs.create({ url: `${serverUrl}/api/v1/auth/status` });
     });
   },
