@@ -47,6 +47,16 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 **New dependency:**
 - `reqwest 0.12` (rustls-tls) — HTTP client for favicon fetching
 
+### v0.2.1 — UI Polish & Fixes
+
+- Rounder corners throughout the extension popup (10-12px border-radius)
+- Subtler borders and glow effects on focus states
+- Bigger entry icons (36px) with smoother hover transitions
+- Thin custom scrollbar for the entry list
+- Auto-focus search input when opening the extension — start typing immediately to filter
+- Fixed login screen showing behind the entry list when already unlocked
+- Server status dot now polls every 3 seconds instead of checking only once
+
 ---
 
 ### v0.1.0 — Initial Release
