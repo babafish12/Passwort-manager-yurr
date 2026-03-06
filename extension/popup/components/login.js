@@ -43,6 +43,7 @@ const LoginScreen = {
       const status = await sendMessage('GET_STATUS');
       this.statusDot.classList.add('online');
       this.statusDot.classList.remove('offline');
+      this.hideCertHint();
 
       if (!status.initialized) {
         this.setupSection.classList.remove('hidden');
@@ -54,7 +55,29 @@ const LoginScreen = {
     } catch {
       this.statusDot.classList.add('offline');
       this.statusDot.classList.remove('online');
+      this.showCertHint();
     }
+  },
+
+  showCertHint() {
+    if (document.getElementById('cert-hint')) return;
+    const hint = document.createElement('div');
+    hint.id = 'cert-hint';
+    hint.className = 'cert-hint';
+    hint.innerHTML = 'Can\'t reach server. <a id="cert-link" href="#">Accept certificate</a>';
+    this.errorEl.parentNode.insertBefore(hint, this.errorEl.nextSibling);
+    document.getElementById('cert-link').addEventListener('click', async (e) => {
+      e.preventDefault();
+      // Get the saved server URL and open it so user can accept the cert
+      const result = await chrome.storage.local.get('yurrr_server_url');
+      const serverUrl = result['yurrr_server_url'] || 'https://localhost:8443';
+      chrome.tabs.create({ url: `${serverUrl}/api/v1/auth/status` });
+    });
+  },
+
+  hideCertHint() {
+    const hint = document.getElementById('cert-hint');
+    if (hint) hint.remove();
   },
 
   hide() {

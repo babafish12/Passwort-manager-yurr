@@ -118,6 +118,23 @@ input:focus, textarea:focus {
   text-align: center;
 }
 
+.cert-hint {
+  text-align: center;
+  font-size: 12px;
+  color: #888;
+  margin-top: 12px;
+}
+
+.cert-hint a {
+  color: #2ecc71;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.cert-hint a:hover {
+  text-decoration: underline;
+}
+
 /* Search */
 .search-bar {
   margin-bottom: 14px;
