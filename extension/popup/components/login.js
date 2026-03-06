@@ -22,7 +22,23 @@ const LoginScreen = {
     this.passwordInput.value = '';
     this.passwordInput.focus();
 
-    // Check server status
+    this.checkStatus();
+    this.startStatusPolling();
+  },
+
+  startStatusPolling() {
+    this.stopStatusPolling();
+    this.statusInterval = setInterval(() => this.checkStatus(), 3000);
+  },
+
+  stopStatusPolling() {
+    if (this.statusInterval) {
+      clearInterval(this.statusInterval);
+      this.statusInterval = null;
+    }
+  },
+
+  async checkStatus() {
     try {
       const status = await sendMessage('GET_STATUS');
       this.statusDot.classList.add('online');
@@ -43,6 +59,7 @@ const LoginScreen = {
 
   hide() {
     this.screen.classList.add('hidden');
+    this.stopStatusPolling();
   },
 
   async handleUnlock() {
