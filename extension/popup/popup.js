@@ -60,6 +60,7 @@ function hideAllScreens() {
   try {
     const result = await sendMessage('IS_UNLOCKED');
     if (result.unlocked) {
+      hideAllScreens();
       document.getElementById('lock-btn').classList.remove('hidden');
       EntryList.show();
     } else {
