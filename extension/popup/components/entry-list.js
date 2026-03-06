@@ -17,6 +17,7 @@ const EntryList = {
   async show() {
     this.screen.classList.remove('hidden');
     this.searchInput.value = '';
+    this.searchInput.focus();
 
     try {
       this.entries = await sendMessage('LIST_ENTRIES');
