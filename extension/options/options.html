@@ -32,8 +32,69 @@
         <li>You should see a JSON response — the extension can now connect</li>
       </ol>
     </div>
+
+    <hr class="divider">
+
+    <h2>Import Passwords</h2>
+
+    <div class="field">
+      <label for="browser-select">Browser</label>
+      <select id="browser-select">
+        <option value="chrome">Chrome / Brave</option>
+        <option value="firefox">Firefox</option>
+      </select>
+      <small>Select the browser your CSV was exported from</small>
+    </div>
+
+    <div class="field">
+      <label for="csv-file">CSV File</label>
+      <input type="file" id="csv-file" accept=".csv">
+    </div>
+
+    <div class="field">
+      <label>
+        <input type="checkbox" id="skip-duplicates" checked>
+        Skip duplicates (same website + username)
+      </label>
+    </div>
+
+    <div class="actions">
+      <button id="preview-btn" class="btn btn-secondary" disabled>Preview</button>
+      <button id="import-btn" class="btn btn-primary" disabled>Import</button>
+    </div>
+
+    <div id="preview-area" class="preview-area hidden">
+      <h3>Preview (<span id="preview-count">0</span> entries)</h3>
+      <div id="preview-list" class="preview-list"></div>
+    </div>
+
+    <div id="import-status" class="status hidden"></div>
+
+    <div class="instructions">
+      <h3>How to Export Passwords</h3>
+      <details>
+        <summary>Chrome / Brave</summary>
+        <ol>
+          <li>Open <code>chrome://password-manager/settings</code> (or <code>brave://password-manager/settings</code>)</li>
+          <li>Click "Download file" under "Export passwords"</li>
+          <li>Confirm with your system password</li>
+          <li>Select the downloaded CSV file above</li>
+        </ol>
+      </details>
+      <details>
+        <summary>Firefox</summary>
+        <ol>
+          <li>Open <code>about:logins</code></li>
+          <li>Click the three dots menu (...) in the top right</li>
+          <li>Select "Export Logins..."</li>
+          <li>Confirm and save the CSV file</li>
+          <li>Select the saved CSV file above</li>
+        </ol>
+      </details>
+    </div>
   </div>
 
+  <script src="csv-parser.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

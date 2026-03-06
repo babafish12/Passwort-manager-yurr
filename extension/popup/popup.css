@@ -160,6 +160,14 @@ input:focus, textarea:focus {
   color: #2ecc71;
   margin-right: 10px;
   flex-shrink: 0;
+  overflow: hidden;
+}
+
+.entry-icon img {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
 }
 
 .entry-info {
@@ -213,6 +221,19 @@ input:focus, textarea:focus {
   align-items: center;
   gap: 8px;
   margin-bottom: 16px;
+}
+
+.detail-favicon {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.detail-favicon img {
+  display: block;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
 }
 
 .detail-title {

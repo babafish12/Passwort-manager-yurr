@@ -5,6 +5,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::auth;
 use crate::entries;
+use crate::favicons;
 use crate::generate;
 use crate::AppState;
 
@@ -24,9 +25,12 @@ pub fn build_router(state: AppState) -> Router {
         // Entry routes
         .route("/entries", get(entries::list_entries))
         .route("/entries", post(entries::create_entry))
+        .route("/entries/import", post(entries::bulk_import))
         .route("/entries/{id}", get(entries::get_entry))
         .route("/entries/{id}", put(entries::update_entry))
         .route("/entries/{id}", delete(entries::delete_entry))
+        // Favicon route
+        .route("/favicons/{domain}", get(favicons::get_favicon_handler))
         // Generate route
         .route("/generate", post(generate::generate_password));
 

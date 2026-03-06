@@ -2,8 +2,11 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
 
+use std::collections::HashSet;
+
 use crate::crypto;
 use crate::errors::AppError;
+use crate::favicons;
 use crate::models::*;
 use crate::session::AuthenticatedSession;
 use crate::AppState;
@@ -40,7 +43,20 @@ pub async fn list_entries(
         .await?
     };
 
-    let items: Vec<EntryListItem> = entries.iter().map(EntryListItem::from).collect();
+    let favicon_domains: Vec<(String,)> =
+        sqlx::query_as("SELECT domain FROM favicons")
+            .fetch_all(&state.db)
+            .await?;
+    let favicon_set: HashSet<String> = favicon_domains.into_iter().map(|r| r.0).collect();
+
+    let items: Vec<EntryListItem> = entries
+        .iter()
+        .map(|row| {
+            let mut item = EntryListItem::from(row);
+            item.has_favicon = favicon_set.contains(&row.website_domain);
+            item
+        })
+        .collect();
 
     sqlx::query("INSERT INTO audit_log (event_type, details) VALUES ('LIST_ENTRIES', ?)")
         .bind(format!("Listed {} entries", items.len()))
@@ -134,6 +150,13 @@ pub async fn create_entry(
         .execute(&state.db)
         .await?;
 
+    // Fetch favicon in the background
+    let pool = state.db.clone();
+    let domain_clone = domain.clone();
+    tokio::spawn(async move {
+        favicons::ensure_favicon(&pool, &domain_clone).await;
+    });
+
     Ok((
         axum::http::StatusCode::CREATED,
         Json(EntryListItem {
@@ -142,6 +165,7 @@ pub async fn create_entry(
             website_domain: domain,
             username: req.username,
             favorite: false,
+            has_favicon: false,
             created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             updated_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         }),
@@ -204,6 +228,15 @@ pub async fn update_entry(
         .execute(&state.db)
         .await?;
 
+    // Fetch favicon in the background if domain changed
+    if domain != entry.website_domain {
+        let pool = state.db.clone();
+        let domain_clone = domain.clone();
+        tokio::spawn(async move {
+            favicons::ensure_favicon(&pool, &domain_clone).await;
+        });
+    }
+
     Ok(Json(MessageResponse {
         message: "Entry updated".into(),
     }))
@@ -230,5 +263,96 @@ pub async fn delete_entry(
 
     Ok(Json(MessageResponse {
         message: "Entry deleted".into(),
+    }))
+}
+
+pub async fn bulk_import(
+    State(state): State<AppState>,
+    session: AuthenticatedSession,
+    Json(req): Json<BulkImportRequest>,
+) -> Result<Json<BulkImportResponse>, AppError> {
+    let mut imported = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+    let mut errors = Vec::new();
+
+    // Build set of existing (domain, username) pairs for duplicate detection
+    let existing: Vec<EntryRow> = sqlx::query_as(
+        "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries",
+    )
+    .fetch_all(&state.db)
+    .await?;
+
+    let existing_set: HashSet<(String, String)> = existing
+        .iter()
+        .map(|e| (e.website_domain.clone(), e.username.clone()))
+        .collect();
+
+    for entry_req in &req.entries {
+        let domain = extract_domain(&entry_req.website_url);
+
+        if req.skip_duplicates && existing_set.contains(&(domain.clone(), entry_req.username.clone())) {
+            skipped += 1;
+            continue;
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+
+        let password_encrypted = match crypto::encrypt(&entry_req.password, &session.encryption_key) {
+            Ok(enc) => enc,
+            Err(e) => {
+                failed += 1;
+                errors.push(format!("{domain}: encrypt failed: {e}"));
+                continue;
+            }
+        };
+
+        let notes_encrypted = if let Some(ref notes) = entry_req.notes {
+            if !notes.is_empty() {
+                crypto::encrypt(notes, &session.encryption_key).ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        match sqlx::query(
+            "INSERT INTO entries (id, website_url, website_domain, username, password_encrypted, notes_encrypted) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&entry_req.website_url)
+        .bind(&domain)
+        .bind(&entry_req.username)
+        .bind(&password_encrypted)
+        .bind(&notes_encrypted)
+        .execute(&state.db)
+        .await
+        {
+            Ok(_) => {
+                imported += 1;
+                let pool = state.db.clone();
+                let d = domain.clone();
+                tokio::spawn(async move {
+                    favicons::ensure_favicon(&pool, &d).await;
+                });
+            }
+            Err(e) => {
+                failed += 1;
+                errors.push(format!("{domain}: db insert failed: {e}"));
+            }
+        }
+    }
+
+    sqlx::query("INSERT INTO audit_log (event_type, details) VALUES ('BULK_IMPORT', ?)")
+        .bind(format!("Imported {imported}, skipped {skipped}, failed {failed}"))
+        .execute(&state.db)
+        .await?;
+
+    Ok(Json(BulkImportResponse {
+        imported,
+        skipped,
+        failed,
+        errors,
     }))
 }

@@ -6,6 +6,7 @@ const EntryDetail = {
   init() {
     this.screen = document.getElementById('detail-screen');
     this.domainEl = document.getElementById('detail-domain');
+    this.faviconEl = document.getElementById('detail-favicon');
     this.urlEl = document.getElementById('detail-url');
     this.usernameEl = document.getElementById('detail-username');
     this.passwordEl = document.getElementById('detail-password');
@@ -57,6 +58,8 @@ const EntryDetail = {
       this.currentEntry = entry;
 
       this.domainEl.textContent = entry.website_domain;
+      this.faviconEl.innerHTML = '';
+      this.loadDetailFavicon(entry.website_domain);
       this.urlEl.textContent = entry.website_url;
       this.usernameEl.textContent = entry.username;
       this.passwordEl.textContent = '\u2022'.repeat(12);
@@ -91,6 +94,17 @@ const EntryDetail = {
       this.passwordEl.textContent = '\u2022'.repeat(12);
       this.passwordEl.classList.add('password-masked');
       this.togglePwBtn.innerHTML = '&#128065;';
+    }
+  },
+
+  async loadDetailFavicon(domain) {
+    try {
+      const result = await sendMessage('GET_FAVICON', { domain });
+      if (result && result.dataUrl) {
+        this.faviconEl.innerHTML = `<img src="${result.dataUrl}" alt="">`;
+      }
+    } catch {
+      // No favicon available
     }
   },
 

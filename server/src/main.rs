@@ -4,6 +4,7 @@ mod crypto;
 mod db;
 mod entries;
 mod errors;
+mod favicons;
 mod generate;
 mod models;
 mod router;

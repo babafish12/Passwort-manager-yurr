@@ -99,6 +99,32 @@ export class VaultAPI {
     });
   }
 
+  // Favicon
+  async getFavicon(domain) {
+    const serverUrl = await this.getServerUrl();
+    const url = `${serverUrl}${API_BASE}/favicons/${encodeURIComponent(domain)}`;
+    const headers = {};
+    if (this.token) {
+      headers['Authorization'] = `Bearer ${this.token}`;
+    }
+    const response = await fetch(url, { headers });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Bulk import
+  async bulkImport(entries, skipDuplicates = true) {
+    return this.request('POST', '/entries/import', {
+      entries,
+      skip_duplicates: skipDuplicates,
+    });
+  }
+
   // Change master password
   async changePassword(currentPassword, newPassword) {
     return this.request('PUT', '/auth/change-password', {

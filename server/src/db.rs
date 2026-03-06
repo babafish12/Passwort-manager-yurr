@@ -26,13 +26,17 @@ pub async fn init_pool() -> Result<SqlitePool, sqlx::Error> {
 }
 
 pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
-    let migration_sql = include_str!("../migrations/001_initial_schema.sql");
+    let migrations = [
+        include_str!("../migrations/001_initial_schema.sql"),
+        include_str!("../migrations/002_favicons.sql"),
+    ];
 
-    // Split by semicolons and execute each statement
-    for statement in migration_sql.split(';') {
-        let stmt = statement.trim();
-        if !stmt.is_empty() {
-            sqlx::query(stmt).execute(pool).await?;
+    for migration_sql in &migrations {
+        for statement in migration_sql.split(';') {
+            let stmt = statement.trim();
+            if !stmt.is_empty() {
+                sqlx::query(stmt).execute(pool).await?;
+            }
         }
     }
 

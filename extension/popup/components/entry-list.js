@@ -54,7 +54,7 @@ const EntryList = {
       .map(
         (e) => `
       <div class="entry-item" data-id="${e.id}">
-        <div class="entry-icon">${e.website_domain.charAt(0).toUpperCase()}</div>
+        <div class="entry-icon"${e.has_favicon ? ` data-favicon-domain="${escapeHtml(e.website_domain)}"` : ''}>${e.website_domain.charAt(0).toUpperCase()}</div>
         <div class="entry-info">
           <div class="entry-domain">${escapeHtml(e.website_domain)}</div>
           <div class="entry-username">${escapeHtml(e.username)}</div>
@@ -70,5 +70,29 @@ const EntryList = {
         EntryDetail.show(el.dataset.id);
       });
     });
+
+    // Load favicons asynchronously
+    this.loadFavicons();
+  },
+
+  async loadFavicons() {
+    const iconEls = this.listEl.querySelectorAll('.entry-icon[data-favicon-domain]');
+    const domains = new Set();
+    iconEls.forEach((el) => domains.add(el.dataset.faviconDomain));
+
+    for (const domain of domains) {
+      try {
+        const result = await sendMessage('GET_FAVICON', { domain });
+        if (result && result.dataUrl) {
+          this.listEl
+            .querySelectorAll(`.entry-icon[data-favicon-domain="${CSS.escape(domain)}"]`)
+            .forEach((el) => {
+              el.innerHTML = `<img src="${result.dataUrl}" alt="">`;
+            });
+        }
+      } catch {
+        // Keep letter fallback
+      }
+    }
   },
 };

@@ -3,6 +3,7 @@ import { SessionManager } from './session.js';
 
 const api = new VaultAPI();
 const session = new SessionManager(api);
+const faviconCache = new Map();
 
 // Restore token on startup
 session.loadToken();
@@ -43,6 +44,7 @@ async function handleMessage(message, sender) {
 
     case 'LOGOUT':
       await session.lock();
+      faviconCache.clear();
       return { success: true };
 
     case 'IS_UNLOCKED':
@@ -129,6 +131,20 @@ async function handleMessage(message, sender) {
         session.clearCache();
         return { saved: true, updated: false };
       }
+    }
+
+    case 'GET_FAVICON': {
+      const { domain } = payload;
+      if (faviconCache.has(domain)) return { dataUrl: faviconCache.get(domain) };
+      const dataUrl = await api.getFavicon(domain);
+      if (dataUrl) faviconCache.set(domain, dataUrl);
+      return { dataUrl };
+    }
+
+    case 'BULK_IMPORT': {
+      session.resetAutoLock();
+      session.clearCache();
+      return await api.bulkImport(payload.entries, payload.skipDuplicates);
     }
 
     case 'CHANGE_PASSWORD': {

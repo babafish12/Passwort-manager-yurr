@@ -70,6 +70,16 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+// --- Database row types (favicons) ---
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct FaviconRow {
+    pub domain: String,
+    pub image_data: Vec<u8>,
+    pub mime_type: String,
+    pub fetched_at: String,
+}
+
 // --- Response types ---
 
 #[derive(Debug, Serialize)]
@@ -90,6 +100,7 @@ pub struct EntryListItem {
     pub website_domain: String,
     pub username: String,
     pub favorite: bool,
+    pub has_favicon: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -125,8 +136,25 @@ impl From<&EntryRow> for EntryListItem {
             website_domain: row.website_domain.clone(),
             username: row.username.clone(),
             favorite: row.favorite != 0,
+            has_favicon: false,
             created_at: row.created_at.clone(),
             updated_at: row.updated_at.clone(),
         }
     }
+}
+
+// --- Bulk import types ---
+
+#[derive(Debug, Deserialize)]
+pub struct BulkImportRequest {
+    pub entries: Vec<CreateEntryRequest>,
+    pub skip_duplicates: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BulkImportResponse {
+    pub imported: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
 }
