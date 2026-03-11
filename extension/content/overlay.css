@@ -150,3 +150,160 @@
   background: #333;
   color: #e0e0e0;
 }
+
+/* Credential picker icon */
+.yurrr-field-icon {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: #1a1a2e;
+  border: 1px solid #2ecc71;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2147483646;
+  transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.yurrr-field-icon:hover {
+  background: #16213e;
+  transform: scale(1.08);
+  box-shadow: 0 2px 12px rgba(46, 204, 113, 0.3);
+}
+
+.yurrr-field-icon svg {
+  width: 16px;
+  height: 16px;
+  fill: #2ecc71;
+}
+
+/* Credential picker dropdown */
+.yurrr-picker {
+  display: none;
+  position: absolute;
+  z-index: 2147483647;
+  background: #1a1a2e;
+  border: 1px solid #2ecc71;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #e0e0e0;
+  overflow: hidden;
+  min-width: 260px;
+  animation: yurrr-picker-in 0.2s ease;
+}
+
+@keyframes yurrr-picker-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.yurrr-picker-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #16213e;
+  border-bottom: 1px solid #0f3460;
+}
+
+.yurrr-picker-header svg {
+  width: 16px;
+  height: 16px;
+  fill: #2ecc71;
+  flex-shrink: 0;
+}
+
+.yurrr-picker-title {
+  font-weight: 700;
+  color: #2ecc71;
+  font-size: 13px;
+}
+
+.yurrr-picker-subtitle {
+  font-size: 11px;
+  color: #888;
+  margin-left: auto;
+}
+
+.yurrr-picker-list {
+  padding: 4px 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.yurrr-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.yurrr-picker-item:hover {
+  background: #16213e;
+}
+
+.yurrr-picker-item-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #0f3460;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.yurrr-picker-item-avatar svg {
+  width: 16px;
+  height: 16px;
+  fill: #2ecc71;
+}
+
+.yurrr-picker-item-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.yurrr-picker-item-user {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.yurrr-picker-item-pass {
+  font-size: 11px;
+  color: #666;
+  letter-spacing: 2px;
+  margin-top: 2px;
+}
+
+.yurrr-picker-item-check {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.yurrr-picker-item-check svg {
+  width: 18px;
+  height: 18px;
+  fill: #2ecc71;
+}
+
+.yurrr-picker-item.yurrr-active .yurrr-picker-item-check {
+  opacity: 1;
+}
+
+.yurrr-picker-item.yurrr-active {
+  background: rgba(46, 204, 113, 0.08);
+}

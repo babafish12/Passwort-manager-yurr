@@ -4,6 +4,8 @@ import { SessionManager } from './session.js';
 const api = new VaultAPI();
 const session = new SessionManager(api);
 const faviconCache = new Map();
+let pendingCredentials = null;
+let pendingCredentialsTimer = null;
 
 // Restore token on startup
 session.loadToken();
@@ -108,6 +110,53 @@ async function handleMessage(message, sender) {
       return { credentials };
     }
 
+    case 'PENDING_CREDENTIALS': {
+      if (pendingCredentialsTimer) {
+        clearTimeout(pendingCredentialsTimer);
+      }
+      pendingCredentials = {
+        url: payload.url,
+        domain: payload.domain,
+        username: payload.username,
+        password: payload.password,
+        timestamp: Date.now(),
+      };
+      pendingCredentialsTimer = setTimeout(() => {
+        pendingCredentials = null;
+        pendingCredentialsTimer = null;
+      }, 30000);
+      return { stored: true };
+    }
+
+    case 'CHECK_PENDING_CREDENTIALS': {
+      const { domain } = payload;
+      if (
+        !pendingCredentials ||
+        pendingCredentials.domain !== domain ||
+        Date.now() - pendingCredentials.timestamp > 30000
+      ) {
+        return { hasPending: false };
+      }
+      return {
+        hasPending: true,
+        credentials: {
+          url: pendingCredentials.url,
+          domain: pendingCredentials.domain,
+          username: pendingCredentials.username,
+          password: pendingCredentials.password,
+        },
+      };
+    }
+
+    case 'CLEAR_PENDING_CREDENTIALS': {
+      pendingCredentials = null;
+      if (pendingCredentialsTimer) {
+        clearTimeout(pendingCredentialsTimer);
+        pendingCredentialsTimer = null;
+      }
+      return { cleared: true };
+    }
+
     case 'FORM_SUBMITTED': {
       if (!(await session.isUnlocked())) {
         return { saved: false };
@@ -115,21 +164,30 @@ async function handleMessage(message, sender) {
       session.resetAutoLock();
       const { url, username, password } = payload;
 
-      // Check if entry already exists for this domain+username
       const domain = new URL(url).hostname;
       const existing = await api.listEntries(domain);
-      const match = existing.find((e) => e.username === username);
 
-      if (match) {
-        // Update existing
-        await api.updateEntry(match.id, { password });
-        session.clearCache();
-        return { saved: true, updated: true };
+      if (username) {
+        // Normal flow: match by domain + username
+        const match = existing.find((e) => e.username === username);
+        if (match) {
+          await api.updateEntry(match.id, { password });
+          session.clearCache();
+          return { saved: true, updated: true };
+        } else {
+          await api.createEntry({ website_url: url, username, password });
+          session.clearCache();
+          return { saved: true, updated: false };
+        }
       } else {
-        // Create new
-        await api.createEntry({ website_url: url, username, password });
-        session.clearCache();
-        return { saved: true, updated: false };
+        // Multi-step login (e.g. Google): no username captured on password step
+        if (existing.length === 1) {
+          await api.updateEntry(existing[0].id, { password });
+          session.clearCache();
+          return { saved: true, updated: true };
+        }
+        // Can't determine which entry to update without username
+        return { saved: false };
       }
     }
 

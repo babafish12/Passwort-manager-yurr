@@ -47,6 +47,25 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 **New dependency:**
 - `reqwest 0.12` (rustls-tls) — HTTP client for favicon fetching
 
+### v0.3.0 — Credential Picker & Save-Password Fix
+
+#### Credential Picker
+- When clicking on a login field, a dropdown now shows all saved credentials for that site
+- Select any credential to auto-fill username and password
+- Shadow DOM rendering — styles are fully isolated from page CSS
+- Closes on Escape, outside click, or after selection
+
+#### Save-Password Prompt Fix
+- The "Save password?" banner no longer disappears when the page navigates after login
+- Credentials are temporarily stored in the service worker and the banner appears on the next page
+- Auto-expires after 30 seconds
+
+#### Multi-Step Login Support (e.g. Google)
+- Password-only steps (no visible username field) are now handled correctly
+- Form submission works even when the username was entered on a previous page
+
+---
+
 ### v0.2.1 — UI Polish & Fixes
 
 - Rounder corners throughout the extension popup (10-12px border-radius)
