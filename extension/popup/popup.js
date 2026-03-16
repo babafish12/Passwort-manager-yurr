@@ -55,11 +55,21 @@ function hideAllScreens() {
   document.getElementById('form-screen').classList.add('hidden');
 }
 
+// Utility: get server URL for cert warmup
+async function getServerUrl() {
+  const result = await chrome.storage.local.get('yurrr_server_url');
+  return result['yurrr_server_url'] || 'https://localhost:8443';
+}
+
 // Startup: check if unlocked
 (async () => {
   try {
     const result = await sendMessage('IS_UNLOCKED');
     if (result.unlocked) {
+      // Warm up self-signed cert from popup context before service worker API calls
+      const serverUrl = await getServerUrl();
+      try { await fetch(`${serverUrl}/api/v1/auth/status`); } catch {}
+
       hideAllScreens();
       document.getElementById('lock-btn').classList.remove('hidden');
       EntryList.show();

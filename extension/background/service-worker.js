@@ -7,8 +7,9 @@ const faviconCache = new Map();
 let pendingCredentials = null;
 let pendingCredentialsTimer = null;
 
-// Restore token on startup
+// Restore token on startup (fire-and-forget, non-blocking)
 session.loadToken();
+session.setupIdleDetection();
 
 // Auto-lock alarm handler
 chrome.alarms.onAlarm.addListener(async (alarm) => {

@@ -23,6 +23,25 @@
 
     <div id="status" class="status hidden"></div>
 
+    <hr class="divider">
+
+    <h2>Security</h2>
+
+    <div class="field">
+      <label for="session-mode">Session Persistence</label>
+      <select id="session-mode">
+        <option value="ephemeral">Lock on browser restart (default)</option>
+        <option value="persistent">Keep unlocked until laptop locks</option>
+      </select>
+      <small>Controls when you need to re-enter your master password. "Keep unlocked" stores the session locally and locks automatically when your system locks.</small>
+    </div>
+
+    <div class="actions">
+      <button id="save-session-btn" class="btn btn-primary">Save</button>
+    </div>
+
+    <div id="session-status" class="status hidden"></div>
+
     <div class="instructions">
       <h3>Self-Signed Certificate</h3>
       <p>Since the server uses a self-signed certificate, you need to accept it in Brave first:</p>

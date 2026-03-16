@@ -1,19 +1,45 @@
-import { STORAGE_KEY_TOKEN, AUTO_LOCK_MINUTES } from '../lib/constants.js';
+import {
+  STORAGE_KEY_TOKEN,
+  AUTO_LOCK_MINUTES,
+  STORAGE_KEY_SESSION_MODE,
+  SESSION_MODE_PERSISTENT,
+} from '../lib/constants.js';
 
 export class SessionManager {
   constructor(api) {
     this.api = api;
     this.credentialCache = new Map();
+    this._cachedMode = null;
+  }
+
+  async _getMode() {
+    if (this._cachedMode) return this._cachedMode;
+    const result = await chrome.storage.local.get(STORAGE_KEY_SESSION_MODE);
+    this._cachedMode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+    return this._cachedMode;
   }
 
   async saveToken(token) {
-    await chrome.storage.session.set({ [STORAGE_KEY_TOKEN]: token });
+    const mode = await this._getMode();
+    if (mode === SESSION_MODE_PERSISTENT) {
+      await chrome.storage.local.set({ [STORAGE_KEY_TOKEN]: token });
+    } else {
+      await chrome.storage.session.set({ [STORAGE_KEY_TOKEN]: token });
+    }
     this.api.setToken(token);
   }
 
   async loadToken() {
-    const result = await chrome.storage.session.get(STORAGE_KEY_TOKEN);
-    const token = result[STORAGE_KEY_TOKEN] || null;
+    // Check session storage first (ephemeral — original behavior)
+    let result = await chrome.storage.session.get(STORAGE_KEY_TOKEN);
+    let token = result[STORAGE_KEY_TOKEN] || null;
+
+    // Fallback: check local storage (persistent mode)
+    if (!token) {
+      result = await chrome.storage.local.get(STORAGE_KEY_TOKEN);
+      token = result[STORAGE_KEY_TOKEN] || null;
+    }
+
     if (token) {
       this.api.setToken(token);
     }
@@ -22,6 +48,7 @@ export class SessionManager {
 
   async clearToken() {
     await chrome.storage.session.remove(STORAGE_KEY_TOKEN);
+    await chrome.storage.local.remove(STORAGE_KEY_TOKEN);
     this.api.clearToken();
     this.credentialCache.clear();
   }
@@ -44,6 +71,28 @@ export class SessionManager {
     }
     await this.clearToken();
     chrome.alarms.clear('auto-lock');
+  }
+
+  setupIdleDetection() {
+    try {
+      chrome.idle.setDetectionInterval(15);
+      chrome.idle.onStateChanged.addListener((newState) => {
+        if (this._cachedMode === SESSION_MODE_PERSISTENT && newState === 'locked') {
+          this.lock();
+        }
+      });
+    } catch {
+      // idle API may not be available
+    }
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' && changes[STORAGE_KEY_SESSION_MODE]) {
+        const newMode = changes[STORAGE_KEY_SESSION_MODE].newValue || 'ephemeral';
+        this._cachedMode = newMode;
+        // Clear token on mode change — user must re-login
+        this.clearToken();
+      }
+    });
   }
 
   async getCredentialsForDomain(domain) {

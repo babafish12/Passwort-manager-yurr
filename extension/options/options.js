@@ -44,6 +44,27 @@ saveBtn.addEventListener('click', () => {
   });
 });
 
+// --- Session Mode ---
+const STORAGE_KEY_SESSION_MODE = 'yurrr_session_mode';
+const sessionModeSelect = document.getElementById('session-mode');
+const saveSessionBtn = document.getElementById('save-session-btn');
+const sessionStatusEl = document.getElementById('session-status');
+
+chrome.storage.local.get(STORAGE_KEY_SESSION_MODE, (result) => {
+  sessionModeSelect.value = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+});
+
+saveSessionBtn.addEventListener('click', () => {
+  const mode = sessionModeSelect.value;
+  chrome.storage.local.set({ [STORAGE_KEY_SESSION_MODE]: mode }, () => {
+    sessionStatusEl.textContent = mode === 'persistent'
+      ? 'Saved! Session will persist across browser restarts. You may need to log in again.'
+      : 'Saved! Session will be cleared on browser restart.';
+    sessionStatusEl.className = 'status success';
+    setTimeout(() => { sessionStatusEl.className = 'status hidden'; }, 3000);
+  });
+});
+
 // --- Import ---
 
 const csvFileInput = document.getElementById('csv-file');

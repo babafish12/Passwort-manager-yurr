@@ -3,7 +3,7 @@
   "name": "Yurrr Password Manager",
   "version": "1.0.0",
   "description": "Local network password manager",
-  "permissions": ["storage", "activeTab", "scripting", "alarms"],
+  "permissions": ["storage", "activeTab", "scripting", "alarms", "idle"],
   "host_permissions": ["https://*/*", "http://*/*"],
   "background": {
     "service_worker": "background/service-worker.js",
