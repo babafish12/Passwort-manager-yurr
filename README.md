@@ -47,6 +47,18 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 **New dependency:**
 - `reqwest 0.12` (rustls-tls) — HTTP client for favicon fetching
 
+### v0.4.0 — Session Persistence Setting
+
+- New **Session Persistence** option in extension settings (right-click → Options → Security)
+- Two modes:
+  - **Lock on browser restart** (default) — same behavior as before
+  - **Keep unlocked until laptop locks** — session survives browser restarts, auto-locks when the system screen locks
+- Uses `chrome.idle` API for system lock detection
+- Switching modes forces a re-login for security
+- Self-signed cert warmup on popup open to ensure persistent sessions work after browser restart
+
+---
+
 ### v0.3.0 — Credential Picker & Save-Password Fix
 
 #### Credential Picker
