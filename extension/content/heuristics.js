@@ -1,5 +1,45 @@
 // Heuristics for form field detection
 const YurrrHeuristics = {
+  // Find standalone username/email fields when no password field is present
+  findStandaloneUsernameFields() {
+    const candidates = [];
+
+    // Strategy 1: autocomplete attributes
+    const autocompleteCandidates = document.querySelectorAll(
+      'input[autocomplete="username"], input[autocomplete="email"]'
+    );
+    for (const el of autocompleteCandidates) {
+      if (!this.isHidden(el)) {
+        candidates.push(el);
+      }
+    }
+
+    // Strategy 2: input[type="email"]
+    const emailInputs = document.querySelectorAll('input[type="email"]');
+    for (const el of emailInputs) {
+      if (!this.isHidden(el) && !candidates.includes(el)) {
+        candidates.push(el);
+      }
+    }
+
+    // Strategy 3: name/id matching
+    const namePatterns = /^(user|username|email|login|account|uname|uid|identifier)$/i;
+    const allInputs = document.querySelectorAll('input[type="text"], input:not([type])');
+
+    for (const el of allInputs) {
+      if (this.isHidden(el) || candidates.includes(el)) continue;
+      
+      const name = el.name || '';
+      const id = el.id || '';
+
+      if (namePatterns.test(name) || namePatterns.test(id)) {
+        candidates.push(el);
+      }
+    }
+
+    return candidates;
+  },
+
   // Find the username/email field associated with a password field
   findUsernameField(passwordField) {
     const form = passwordField.closest('form');
