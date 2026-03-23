@@ -33,6 +33,11 @@ const YurrrDetector = {
 
       const form = pwField.closest('form');
       const usernameField = YurrrHeuristics.findUsernameField(pwField);
+      
+      if (usernameField) {
+        this.detectedForms.add(usernameField);
+      }
+
       const isRegistration = YurrrHeuristics.isRegistrationForm(form);
 
       if (isRegistration) {
@@ -52,6 +57,28 @@ const YurrrDetector = {
       pwField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           this.handleFormSubmit(form, usernameField, pwField);
+        }
+      });
+    }
+
+    // Process standalone username fields for multi-step logins
+    const standaloneUsernames = YurrrHeuristics.findStandaloneUsernameFields();
+    for (const unField of standaloneUsernames) {
+      if (this.detectedForms.has(unField)) continue;
+      this.detectedForms.add(unField);
+
+      this.tryAutoFill(unField, null);
+
+      const form = unField.closest('form');
+      if (form) {
+        form.addEventListener('submit', () => {
+          this.handleFormSubmit(form, unField, null);
+        });
+      }
+
+      unField.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          this.handleFormSubmit(form, unField, null);
         }
       });
     }
