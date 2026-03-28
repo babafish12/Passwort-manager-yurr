@@ -46,20 +46,46 @@ saveBtn.addEventListener('click', () => {
 
 // --- Session Mode ---
 const STORAGE_KEY_SESSION_MODE = 'yurrr_session_mode';
+const STORAGE_KEY_AUTO_LOCK_MINUTES = 'yurrr_auto_lock_minutes';
 const sessionModeSelect = document.getElementById('session-mode');
 const saveSessionBtn = document.getElementById('save-session-btn');
 const sessionStatusEl = document.getElementById('session-status');
+const autoLockField = document.getElementById('auto-lock-field');
+const autoLockInput = document.getElementById('auto-lock-minutes');
 
-chrome.storage.local.get(STORAGE_KEY_SESSION_MODE, (result) => {
-  sessionModeSelect.value = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+function updateAutoLockVisibility(mode) {
+  autoLockField.style.display = mode === 'inactivity' ? '' : 'none';
+}
+
+chrome.storage.local.get([STORAGE_KEY_SESSION_MODE, STORAGE_KEY_AUTO_LOCK_MINUTES], (result) => {
+  const mode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+  sessionModeSelect.value = mode;
+  autoLockInput.value = result[STORAGE_KEY_AUTO_LOCK_MINUTES] || 15;
+  updateAutoLockVisibility(mode);
+});
+
+sessionModeSelect.addEventListener('change', () => {
+  updateAutoLockVisibility(sessionModeSelect.value);
 });
 
 saveSessionBtn.addEventListener('click', () => {
   const mode = sessionModeSelect.value;
-  chrome.storage.local.set({ [STORAGE_KEY_SESSION_MODE]: mode }, () => {
-    sessionStatusEl.textContent = mode === 'persistent'
-      ? 'Saved! Session will persist across browser restarts. You may need to log in again.'
-      : 'Saved! Session will be cleared on browser restart.';
+  const minutes = Math.max(1, Math.min(1440, parseInt(autoLockInput.value, 10) || 15));
+  autoLockInput.value = minutes;
+
+  const data = { [STORAGE_KEY_SESSION_MODE]: mode };
+  if (mode === 'inactivity') {
+    data[STORAGE_KEY_AUTO_LOCK_MINUTES] = minutes;
+  }
+
+  chrome.storage.local.set(data, () => {
+    let message = 'Saved! Session will be cleared on browser restart.';
+    if (mode === 'persistent') {
+      message = 'Saved! Session persists across restarts, but locks when laptop locks.';
+    } else if (mode === 'inactivity') {
+      message = `Saved! Relaxed mode: session locks after ${minutes} minutes of inactivity.`;
+    }
+    sessionStatusEl.textContent = message;
     sessionStatusEl.className = 'status success';
     setTimeout(() => { sessionStatusEl.className = 'status hidden'; }, 3000);
   });

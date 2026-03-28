@@ -2,7 +2,10 @@ import {
   STORAGE_KEY_TOKEN,
   AUTO_LOCK_MINUTES,
   STORAGE_KEY_SESSION_MODE,
+  STORAGE_KEY_LAST_ACTIVE,
+  STORAGE_KEY_AUTO_LOCK_MINUTES,
   SESSION_MODE_PERSISTENT,
+  SESSION_MODE_INACTIVITY,
 } from '../lib/constants.js';
 
 export class SessionManager {
@@ -10,6 +13,16 @@ export class SessionManager {
     this.api = api;
     this.credentialCache = new Map();
     this._cachedMode = null;
+    this.updateBadge(false);
+  }
+
+  updateBadge(unlocked) {
+    if (unlocked) {
+      chrome.action.setBadgeText({ text: '' });
+    } else {
+      chrome.action.setBadgeText({ text: '!' });
+      chrome.action.setBadgeBackgroundColor({ color: '#D32F2F' });
+    }
   }
 
   async _getMode() {
@@ -19,38 +32,61 @@ export class SessionManager {
     return this._cachedMode;
   }
 
+  async _getAutoLockMinutes() {
+    const result = await chrome.storage.local.get(STORAGE_KEY_AUTO_LOCK_MINUTES);
+    return result[STORAGE_KEY_AUTO_LOCK_MINUTES] || AUTO_LOCK_MINUTES;
+  }
+
   async saveToken(token) {
     const mode = await this._getMode();
-    if (mode === SESSION_MODE_PERSISTENT) {
+    if (mode === SESSION_MODE_PERSISTENT || mode === SESSION_MODE_INACTIVITY) {
       await chrome.storage.local.set({ [STORAGE_KEY_TOKEN]: token });
     } else {
       await chrome.storage.session.set({ [STORAGE_KEY_TOKEN]: token });
     }
     this.api.setToken(token);
+    this.updateBadge(true);
+    await this.resetAutoLock();
   }
 
   async loadToken() {
+    const mode = await this._getMode();
+
     // Check session storage first (ephemeral — original behavior)
     let result = await chrome.storage.session.get(STORAGE_KEY_TOKEN);
     let token = result[STORAGE_KEY_TOKEN] || null;
 
-    // Fallback: check local storage (persistent mode)
+    // Fallback: check local storage (persistent or inactivity mode)
     if (!token) {
       result = await chrome.storage.local.get(STORAGE_KEY_TOKEN);
       token = result[STORAGE_KEY_TOKEN] || null;
+
+      // In persistent/inactivity mode, check if we timed out while browser was closed
+      if (token && (mode === SESSION_MODE_PERSISTENT || mode === SESSION_MODE_INACTIVITY)) {
+        const autoLockMinutes = await this._getAutoLockMinutes();
+        const lastActiveResult = await chrome.storage.local.get(STORAGE_KEY_LAST_ACTIVE);
+        const lastActive = lastActiveResult[STORAGE_KEY_LAST_ACTIVE];
+        if (lastActive && Date.now() - lastActive > autoLockMinutes * 60 * 1000) {
+          await this.lock();
+          return null;
+        }
+      }
     }
 
     if (token) {
       this.api.setToken(token);
     }
+    this.updateBadge(!!token);
     return token;
   }
 
   async clearToken() {
     await chrome.storage.session.remove(STORAGE_KEY_TOKEN);
     await chrome.storage.local.remove(STORAGE_KEY_TOKEN);
+    await chrome.storage.local.remove(STORAGE_KEY_LAST_ACTIVE);
     this.api.clearToken();
     this.credentialCache.clear();
+    this.updateBadge(false);
   }
 
   async isUnlocked() {
@@ -58,9 +94,11 @@ export class SessionManager {
     return !!token;
   }
 
-  resetAutoLock() {
+  async resetAutoLock() {
+    const autoLockMinutes = await this._getAutoLockMinutes();
     chrome.alarms.clear('auto-lock');
-    chrome.alarms.create('auto-lock', { delayInMinutes: AUTO_LOCK_MINUTES });
+    chrome.alarms.create('auto-lock', { delayInMinutes: autoLockMinutes });
+    await chrome.storage.local.set({ [STORAGE_KEY_LAST_ACTIVE]: Date.now() });
   }
 
   async lock() {
@@ -75,8 +113,9 @@ export class SessionManager {
 
   setupIdleDetection() {
     try {
-      chrome.idle.setDetectionInterval(15);
+      chrome.idle.setDetectionInterval(60); // 1 minute
       chrome.idle.onStateChanged.addListener((newState) => {
+        // Only lock immediately on laptop lock if mode is 'persistent'
         if (this._cachedMode === SESSION_MODE_PERSISTENT && newState === 'locked') {
           this.lock();
         }

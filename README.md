@@ -15,6 +15,15 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 
 ## Changelog
 
+### v0.5.0 — Configurable Inactivity Timeout
+
+- The **inactivity timeout** is now configurable in extension settings (Security section)
+- When "Lock after inactivity (relaxed)" mode is selected, a new input field appears to set the timeout in minutes (1–1440)
+- Default remains 15 minutes
+- Setting is stored in browser storage and applied to both the auto-lock alarm and session recovery after browser restart
+
+---
+
 ### v0.4.0 — Session Persistence Setting
 
 - New **Session Persistence** option in extension settings (right-click → Options → Security)

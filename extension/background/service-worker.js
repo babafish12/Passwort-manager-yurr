@@ -187,8 +187,11 @@ async function handleMessage(message, sender) {
           session.clearCache();
           return { saved: true, updated: true };
         }
-        // Can't determine which entry to update without username
-        return { saved: false };
+        // If 0 or >1 existing entries, create a new entry with an empty username 
+        // to prevent password loss.
+        await api.createEntry({ website_url: url, username: '', password });
+        session.clearCache();
+        return { saved: true, updated: false };
       }
     }
 

@@ -31,9 +31,16 @@
       <label for="session-mode">Session Persistence</label>
       <select id="session-mode">
         <option value="ephemeral">Lock on browser restart (default)</option>
-        <option value="persistent">Keep unlocked until laptop locks</option>
+        <option value="persistent">Lock when laptop locks</option>
+        <option value="inactivity">Lock after inactivity (relaxed)</option>
       </select>
-      <small>Controls when you need to re-enter your master password. "Keep unlocked" stores the session locally and locks automatically when your system locks.</small>
+      <small>Controls when the vault locks. "Relaxed" mode stays unlocked across browser restarts and system locks, locking only after inactivity.</small>
+    </div>
+
+    <div class="field" id="auto-lock-field" style="display: none;">
+      <label for="auto-lock-minutes">Inactivity Timeout (minutes)</label>
+      <input type="number" id="auto-lock-minutes" min="1" max="1440" value="15">
+      <small>Lock the vault after this many minutes of inactivity (1–1440)</small>
     </div>
 
     <div class="actions">
