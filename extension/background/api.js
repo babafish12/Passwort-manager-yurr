@@ -6,6 +6,24 @@ export class VaultAPI {
     this.serverUrl = null;
   }
 
+  createError(message, code) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  isLikelyNetworkError(err) {
+    const message = String(err?.message || '');
+    return (
+      err?.name === 'TypeError' ||
+      /Failed to fetch|NetworkError|fetch failed|ERR_/i.test(message)
+    );
+  }
+
+  async sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async getServerUrl() {
     if (this.serverUrl) return this.serverUrl;
     const result = await chrome.storage.local.get(STORAGE_KEY_SERVER_URL);
@@ -35,11 +53,41 @@ export class VaultAPI {
       options.body = JSON.stringify(body);
     }
 
-    const response = await fetch(url, options);
-    const data = await response.json();
+    const maxAttempts = 2;
+    let response;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        response = await fetch(url, options);
+        break;
+      } catch (err) {
+        if (attempt < maxAttempts && this.isLikelyNetworkError(err)) {
+          await this.sleep(350);
+          continue;
+        }
+        if (this.isLikelyNetworkError(err)) {
+          throw this.createError('Failed to reach server', 'NETWORK_ERROR');
+        }
+        throw err;
+      }
+    }
+
+    const rawText = await response.text();
+    let data = {};
+    if (rawText) {
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = { error: rawText };
+      }
+    }
 
     if (!response.ok) {
-      throw new Error(data.error || `HTTP ${response.status}`);
+      const message = data.error || data.message || `HTTP ${response.status}`;
+      if (requiresAuth && (response.status === 401 || response.status === 403)) {
+        throw this.createError(message, 'AUTH_ERROR');
+      }
+      throw this.createError(message, 'HTTP_ERROR');
     }
 
     return data;
@@ -107,7 +155,28 @@ export class VaultAPI {
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
-    const response = await fetch(url, { headers });
+
+    let response;
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        response = await fetch(url, { headers });
+        break;
+      } catch (err) {
+        if (attempt < maxAttempts && this.isLikelyNetworkError(err)) {
+          await this.sleep(300);
+          continue;
+        }
+        if (this.isLikelyNetworkError(err)) {
+          throw this.createError('Failed to reach server', 'NETWORK_ERROR');
+        }
+        throw err;
+      }
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw this.createError('Session expired', 'AUTH_ERROR');
+    }
     if (!response.ok) return null;
     const blob = await response.blob();
     return new Promise((resolve) => {

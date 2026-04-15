@@ -42,7 +42,9 @@ label {
   margin-bottom: 6px;
 }
 
-input[type="text"] {
+input[type="text"],
+input[type="number"],
+textarea {
   width: 100%;
   padding: 10px 12px;
   background: #16213e;
@@ -50,6 +52,55 @@ input[type="text"] {
   border-radius: 6px;
   color: #e0e0e0;
   font-size: 14px;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 100px;
+  font-family: inherit;
+}
+
+textarea[readonly] {
+  opacity: 0.9;
+  cursor: default;
+}
+
+.auto-email-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.auto-email-selection-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #2a2f44;
+  border-radius: 8px;
+  background: #131c35;
+  padding: 6px;
+}
+
+.auto-email-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  color: #d3d8e6;
+}
+
+.auto-email-item:hover {
+  background: rgba(46, 204, 113, 0.08);
+}
+
+.auto-email-item input[type="checkbox"] {
+  margin: 0;
+}
+
+.auto-email-empty {
+  color: #77809b;
+  font-size: 13px;
+  padding: 8px;
 }
 
 input:focus {

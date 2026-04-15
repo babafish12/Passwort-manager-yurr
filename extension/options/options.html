@@ -49,6 +49,37 @@
 
     <div id="session-status" class="status hidden"></div>
 
+    <hr class="divider">
+
+    <h2>Email Suggestions</h2>
+
+    <div class="field">
+      <label for="email-suggestions">Suggested Email Addresses</label>
+      <textarea id="email-suggestions" rows="5" placeholder="alice@gmail.com&#10;work@company.com"></textarea>
+      <small>One address per line. Used on signup/registration forms for quick email suggestions (Gmail and any other domain).</small>
+    </div>
+
+    <div class="actions">
+      <button id="save-emails-btn" class="btn btn-primary">Save</button>
+    </div>
+
+    <div class="field">
+      <label>Auto-Detected Email Addresses</label>
+      <div class="auto-email-controls">
+        <button id="select-all-auto-emails-btn" class="btn btn-secondary" type="button">Select All</button>
+        <button id="select-none-auto-emails-btn" class="btn btn-secondary" type="button">Select None</button>
+      </div>
+      <div id="auto-email-selection-list" class="auto-email-selection-list"></div>
+      <small>Select which detected emails should be suggested in signup/login forms.</small>
+    </div>
+
+    <div class="actions">
+      <button id="import-vault-emails-btn" class="btn btn-secondary">Import From Vault</button>
+      <button id="clear-auto-emails-btn" class="btn btn-secondary">Clear Auto-Detected</button>
+    </div>
+
+    <div id="email-status" class="status hidden"></div>
+
     <div class="instructions">
       <h3>Self-Signed Certificate</h3>
       <p>Since the server uses a self-signed certificate, you need to accept it in Brave first:</p>

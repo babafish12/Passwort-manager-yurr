@@ -140,6 +140,34 @@ input:focus, textarea:focus {
   margin-bottom: 14px;
 }
 
+.vault-sections {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.section-chip {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #16213e;
+  color: #a7adc0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.section-chip:hover {
+  color: #e0e0e0;
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.section-chip-active {
+  color: #1a1a2e;
+  background: #2ecc71;
+  border-color: #2ecc71;
+}
+
 .search-bar input {
   width: 100%;
   padding: 10px 14px;
@@ -177,6 +205,22 @@ input:focus, textarea:focus {
 .entry-item:hover {
   background: #1a2744;
   border-color: rgba(46, 204, 113, 0.1);
+}
+
+.mini-icon-btn {
+  background: transparent;
+  border: none;
+  color: #777;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.mini-icon-btn:hover {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.12);
 }
 
 .entry-icon {
@@ -397,4 +441,70 @@ input:focus, textarea:focus {
 @keyframes toastIn {
   from { opacity: 0; transform: translateX(-50%) translateY(10px) scale(0.95); }
   to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+.entity-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: rgba(4, 7, 14, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+.entity-modal-card {
+  width: 100%;
+  max-width: 340px;
+  background: #141e36;
+  border: 1px solid rgba(46, 204, 113, 0.2);
+  border-radius: 14px;
+  padding: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+}
+
+.entity-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #2ecc71;
+  margin-bottom: 10px;
+}
+
+.entity-modal-helper {
+  color: #9aa7cb;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.entity-modal-label {
+  display: block;
+  margin-top: 8px;
+  margin-bottom: 4px;
+  color: #b7c1dd;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.entity-modal-input {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #1b2744;
+  color: #e0e0e0;
+  font-size: 13px;
+}
+
+.entity-modal-input:focus {
+  outline: none;
+  border-color: #2ecc71;
+  box-shadow: 0 0 0 2px rgba(46, 204, 113, 0.18);
+}
+
+.entity-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
 }

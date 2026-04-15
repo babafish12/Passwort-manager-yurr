@@ -104,7 +104,11 @@ const LoginScreen = {
     try {
       await sendMessage('LOGIN', { masterPassword: password });
       this.hide();
-      EntryList.show();
+      if (window.VaultSections?.setActiveTab) {
+        await window.VaultSections.setActiveTab(window.VaultSections.activeTab || 'passwords');
+      } else {
+        EntryList.show();
+      }
       document.getElementById('lock-btn').classList.remove('hidden');
     } catch (err) {
       this.errorEl.textContent = err.message || 'Login failed';

@@ -15,6 +15,24 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 
 ## Changelog
 
+### v0.6.0 — Email Selection, Cards/Addresses Tabs, and Session-Loss Handling
+
+- **Email suggestions** are now combined from:
+  - manually configured addresses in extension settings
+  - auto-detected addresses from visited pages
+  - optional import of email usernames from the unlocked vault
+- Auto-detected emails can now be **enabled/disabled individually** in Settings:
+  - per-email checkbox list
+  - `Select All` / `Select None`
+  - only selected auto-detected emails are suggested in forms
+- Popup now includes vault section tabs: **Passwords**, **Cards**, and **Addresses**
+  - Cards and addresses can be added, edited, searched, and deleted directly in the popup
+  - Card type is auto-detected (Visa, Mastercard, Amex, Discover, JCB, Diners) and card numbers are validated with Luhn checks
+  - Cards/addresses are currently stored locally in extension storage (`chrome.storage.local`)
+- Session/network behavior hardened:
+  - API calls retry once on transient fetch/network errors
+  - if a protected request fails with auth/network loss, the extension force-locks locally and requires re-login
+
 ### v0.5.0 — Configurable Inactivity Timeout
 
 - The **inactivity timeout** is now configurable in extension settings (Security section)

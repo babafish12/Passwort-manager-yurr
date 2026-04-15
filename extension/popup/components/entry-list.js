@@ -10,6 +10,9 @@ const EntryList = {
 
     this.searchInput.addEventListener('input', () => this.filterEntries());
     this.addBtn.addEventListener('click', () => {
+      if (window.VaultSections?.handleAddFromList?.()) {
+        return;
+      }
       EntryForm.showAdd();
     });
   },
@@ -23,6 +26,9 @@ const EntryList = {
       this.entries = await sendMessage('LIST_ENTRIES');
       this.renderEntries(this.entries);
     } catch (err) {
+      if (isSessionLostError(err)) {
+        return;
+      }
       this.listEl.innerHTML = `<div class="empty-state">Failed to load: ${err.message}</div>`;
     }
   },
@@ -32,6 +38,10 @@ const EntryList = {
   },
 
   filterEntries() {
+    if (window.VaultSections?.handleSearchInput?.()) {
+      return;
+    }
+
     const query = this.searchInput.value.toLowerCase();
     if (!query) {
       this.renderEntries(this.entries);

@@ -72,6 +72,7 @@ const EntryForm = {
       this.passwordInput.type = 'text';
       PasswordGenerator.updateStrength(result.password);
     } catch (err) {
+      if (isSessionLostError(err)) return;
       showToast('Error: ' + err.message);
     }
   },
@@ -110,6 +111,7 @@ const EntryForm = {
       this.screen.classList.add('hidden');
       EntryList.show();
     } catch (err) {
+      if (isSessionLostError(err)) return;
       showToast('Error: ' + err.message);
     } finally {
       this.saveBtn.disabled = false;

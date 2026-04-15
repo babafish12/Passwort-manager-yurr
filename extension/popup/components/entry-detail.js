@@ -75,6 +75,7 @@ const EntryDetail = {
       EntryList.hide();
       this.screen.classList.remove('hidden');
     } catch (err) {
+      if (isSessionLostError(err)) return;
       showToast('Error: ' + err.message);
     }
   },
@@ -118,6 +119,7 @@ const EntryDetail = {
       this.hide();
       EntryList.show();
     } catch (err) {
+      if (isSessionLostError(err)) return;
       showToast('Error: ' + err.message);
     }
   },

@@ -111,6 +111,11 @@ export class SessionManager {
     chrome.alarms.clear('auto-lock');
   }
 
+  async forceLocalLock() {
+    await this.clearToken();
+    chrome.alarms.clear('auto-lock');
+  }
+
   setupIdleDetection() {
     try {
       chrome.idle.setDetectionInterval(60); // 1 minute
@@ -143,7 +148,10 @@ export class SessionManager {
       const entries = await this.api.listEntries(domain);
       this.credentialCache.set(domain, entries);
       return entries;
-    } catch {
+    } catch (err) {
+      if (err?.code === 'NETWORK_ERROR' || err?.code === 'AUTH_ERROR') {
+        throw err;
+      }
       return [];
     }
   }
