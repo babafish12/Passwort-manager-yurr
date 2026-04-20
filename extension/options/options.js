@@ -9,6 +9,80 @@ const testBtn = document.getElementById('test-btn');
 const saveBtn = document.getElementById('save-btn');
 const statusEl = document.getElementById('status');
 
+const TOAST_ICONS = {
+  success: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" /></svg>',
+  error: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m6 6 12 12" /><path d="m18 6-12 12" /></svg>',
+};
+
+let toastDismissTimer = null;
+let toastRemoveTimer = null;
+
+function setButtonLoading(button, loading, loadingLabel = 'Loading...') {
+  if (!button) return;
+
+  if (loading) {
+    const labelEl = button.querySelector('.btn-label');
+    if (!button.dataset.originalLabel) {
+      button.dataset.originalLabel = labelEl ? labelEl.textContent : button.textContent.trim();
+    }
+
+    if (labelEl) {
+      labelEl.textContent = loadingLabel;
+    } else {
+      button.textContent = loadingLabel;
+    }
+
+    button.disabled = true;
+    button.classList.add('is-loading');
+    return;
+  }
+
+  const labelEl = button.querySelector('.btn-label');
+  const original = button.dataset.originalLabel;
+  if (original) {
+    if (labelEl) {
+      labelEl.textContent = original;
+    } else {
+      button.textContent = original;
+    }
+  }
+
+  button.disabled = false;
+  button.classList.remove('is-loading');
+}
+
+function showToast(message, variant = 'success') {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+
+  if (toastDismissTimer) clearTimeout(toastDismissTimer);
+  if (toastRemoveTimer) clearTimeout(toastRemoveTimer);
+
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.dataset.variant = variant;
+  toast.innerHTML = `
+    <div class="toast-inner">
+      <span>${TOAST_ICONS[variant] || TOAST_ICONS.success}</span>
+      <span>${escapeHtml(message)}</span>
+    </div>
+  `;
+
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('toast-show'));
+
+  toastDismissTimer = setTimeout(() => {
+    toast.classList.add('toast-hide');
+    toastRemoveTimer = setTimeout(() => toast.remove(), 260);
+  }, 2500);
+}
+
+function hideStatusLater(el, delay = 2500) {
+  setTimeout(() => {
+    el.className = 'status hidden';
+  }, delay);
+}
+
 // Load saved URL
 chrome.storage.local.get(STORAGE_KEY, (result) => {
   serverUrlInput.value = result[STORAGE_KEY] || DEFAULT_URL;
@@ -17,33 +91,35 @@ chrome.storage.local.get(STORAGE_KEY, (result) => {
 function showStatus(message, type) {
   statusEl.textContent = message;
   statusEl.className = `status ${type}`;
+  showToast(message, type === 'error' ? 'error' : 'success');
 }
 
 testBtn.addEventListener('click', async () => {
   const url = serverUrlInput.value.replace(/\/+$/, '');
-  testBtn.disabled = true;
-  testBtn.textContent = 'Testing...';
+  setButtonLoading(testBtn, true, 'Testing...');
 
   try {
     const resp = await fetch(`${url}/api/v1/auth/status`);
     const data = await resp.json();
     showStatus(
-      `Connected! Server v${data.server_version} — ${data.initialized ? 'Vault initialized' : 'Vault not initialized'}`,
+      `Connected! Server v${data.server_version} - ${data.initialized ? 'Vault initialized' : 'Vault not initialized'}`,
       'success'
     );
   } catch (err) {
     showStatus(`Connection failed: ${err.message}. Have you accepted the self-signed certificate?`, 'error');
   } finally {
-    testBtn.disabled = false;
-    testBtn.textContent = 'Test Connection';
+    setButtonLoading(testBtn, false);
+    hideStatusLater(statusEl);
   }
 });
 
 saveBtn.addEventListener('click', () => {
   const url = serverUrlInput.value.replace(/\/+$/, '');
+  setButtonLoading(saveBtn, true, 'Saving...');
   chrome.storage.local.set({ [STORAGE_KEY]: url }, () => {
     showStatus('Settings saved!', 'success');
-    setTimeout(() => { statusEl.className = 'status hidden'; }, 2000);
+    setButtonLoading(saveBtn, false);
+    hideStatusLater(statusEl);
   });
 });
 
@@ -93,6 +169,7 @@ saveSessionBtn.addEventListener('click', () => {
     data[STORAGE_KEY_AUTO_LOCK_MINUTES] = minutes;
   }
 
+  setButtonLoading(saveSessionBtn, true, 'Saving...');
   chrome.storage.local.set(data, () => {
     let message = 'Saved! Session will be cleared on browser restart.';
     if (mode === 'persistent') {
@@ -102,7 +179,9 @@ saveSessionBtn.addEventListener('click', () => {
     }
     sessionStatusEl.textContent = message;
     sessionStatusEl.className = 'status success';
-    setTimeout(() => { sessionStatusEl.className = 'status hidden'; }, 3000);
+    showToast(message, 'success');
+    setButtonLoading(saveSessionBtn, false);
+    hideStatusLater(sessionStatusEl, 3000);
   });
 });
 
@@ -161,6 +240,7 @@ async function sendBackgroundMessage(type, payload = {}) {
 function showEmailStatus(message, type) {
   emailStatusEl.textContent = message;
   emailStatusEl.className = `status ${type}`;
+  showToast(message, type === 'error' ? 'error' : 'success');
 }
 
 function parseStoredEmailSuggestions(value) {
@@ -189,8 +269,8 @@ function renderAutoEmailSelectionList() {
       const checked = selectedSet.has(email) ? 'checked' : '';
       return `
         <label class="auto-email-item" for="${id}">
-          <input id="${id}" type="checkbox" data-email="${escapeHtml(email)}" ${checked}>
           <span>${escapeHtml(email)}</span>
+          <input id="${id}" type="checkbox" data-email="${escapeHtml(email)}" ${checked}>
         </label>
       `;
     })
@@ -237,54 +317,57 @@ function applyAutoDetectedEmails(nextDetectedEmails, persistSelection = true) {
 chrome.storage.local.get(
   [STORAGE_KEY_EMAIL_SUGGESTIONS, STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS, STORAGE_KEY_AUTO_EMAIL_SELECTED],
   (result) => {
-  const suggestions = Array.isArray(result[STORAGE_KEY_EMAIL_SUGGESTIONS])
-    ? result[STORAGE_KEY_EMAIL_SUGGESTIONS]
-    : [];
-  const autoSuggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]);
-  const hasSelected = Array.isArray(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
-  const selected = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
+    const suggestions = Array.isArray(result[STORAGE_KEY_EMAIL_SUGGESTIONS])
+      ? result[STORAGE_KEY_EMAIL_SUGGESTIONS]
+      : [];
+    const autoSuggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]);
+    const hasSelected = Array.isArray(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
+    const selected = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
 
-  emailSuggestionsInput.value = suggestions.join('\n');
-  autoDetectedEmails = autoSuggestions;
-  if (hasSelected) {
-    selectedAutoEmails = sanitizeSelectedAutoEmails(selected, autoDetectedEmails);
-    selectedInitialized = true;
-    renderAutoEmailSelectionList();
-  } else {
-    applyAutoDetectedEmails(autoDetectedEmails, true);
+    emailSuggestionsInput.value = suggestions.join('\n');
+    autoDetectedEmails = autoSuggestions;
+    if (hasSelected) {
+      selectedAutoEmails = sanitizeSelectedAutoEmails(selected, autoDetectedEmails);
+      selectedInitialized = true;
+      renderAutoEmailSelectionList();
+    } else {
+      applyAutoDetectedEmails(autoDetectedEmails, true);
+    }
   }
-});
+);
 
 saveEmailsBtn.addEventListener('click', () => {
   const emails = normalizeEmailSuggestions(emailSuggestionsInput.value);
+  setButtonLoading(saveEmailsBtn, true, 'Saving...');
   chrome.storage.local.set({ [STORAGE_KEY_EMAIL_SUGGESTIONS]: emails }, () => {
     emailSuggestionsInput.value = emails.join('\n');
     showEmailStatus(`Saved ${emails.length} suggestion${emails.length === 1 ? '' : 's'}.`, 'success');
-    setTimeout(() => {
-      emailStatusEl.className = 'status hidden';
-    }, 3000);
+    setButtonLoading(saveEmailsBtn, false);
+    hideStatusLater(emailStatusEl, 3000);
   });
 });
 
 clearAutoEmailsBtn.addEventListener('click', () => {
-  chrome.storage.local.set({
-    [STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]: [],
-    [STORAGE_KEY_AUTO_EMAIL_SELECTED]: [],
-  }, () => {
-    autoDetectedEmails = [];
-    selectedAutoEmails = [];
-    selectedInitialized = true;
-    renderAutoEmailSelectionList();
-    showEmailStatus('Auto-detected emails cleared.', 'success');
-    setTimeout(() => {
-      emailStatusEl.className = 'status hidden';
-    }, 3000);
-  });
+  setButtonLoading(clearAutoEmailsBtn, true, 'Clearing...');
+  chrome.storage.local.set(
+    {
+      [STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]: [],
+      [STORAGE_KEY_AUTO_EMAIL_SELECTED]: [],
+    },
+    () => {
+      autoDetectedEmails = [];
+      selectedAutoEmails = [];
+      selectedInitialized = true;
+      renderAutoEmailSelectionList();
+      showEmailStatus('Auto-detected emails cleared.', 'success');
+      setButtonLoading(clearAutoEmailsBtn, false);
+      hideStatusLater(emailStatusEl, 3000);
+    }
+  );
 });
 
 importVaultEmailsBtn.addEventListener('click', async () => {
-  importVaultEmailsBtn.disabled = true;
-  importVaultEmailsBtn.textContent = 'Importing...';
+  setButtonLoading(importVaultEmailsBtn, true, 'Importing...');
 
   try {
     const result = await sendBackgroundMessage('GET_KNOWN_EMAIL_USERNAMES');
@@ -300,17 +383,19 @@ importVaultEmailsBtn.addEventListener('click', async () => {
   } catch (err) {
     showEmailStatus(`Import failed: ${err.message}`, 'error');
   } finally {
-    importVaultEmailsBtn.disabled = false;
-    importVaultEmailsBtn.textContent = 'Import From Vault';
+    setButtonLoading(importVaultEmailsBtn, false);
+    hideStatusLater(emailStatusEl, 3000);
   }
 });
 
 selectAllAutoEmailsBtn.addEventListener('click', () => {
   setSelectedAutoEmails(autoDetectedEmails, true);
+  showToast('All auto-detected emails selected.', 'success');
 });
 
 selectNoneAutoEmailsBtn.addEventListener('click', () => {
   setSelectedAutoEmails([], true);
+  showToast('Selection cleared.', 'success');
 });
 
 autoEmailSelectionListEl.addEventListener('change', (event) => {
@@ -360,6 +445,14 @@ const skipDuplicatesEl = document.getElementById('skip-duplicates');
 
 let parsedEntries = [];
 
+function showImportStatus(message, type, showToastFlag = true) {
+  importStatus.textContent = message;
+  importStatus.className = `status ${type}`;
+  if (showToastFlag) {
+    showToast(message, type === 'error' ? 'error' : 'success');
+  }
+}
+
 csvFileInput.addEventListener('change', () => {
   previewBtn.disabled = !csvFileInput.files.length;
   importBtn.disabled = true;
@@ -371,6 +464,8 @@ csvFileInput.addEventListener('change', () => {
 previewBtn.addEventListener('click', () => {
   const file = csvFileInput.files[0];
   if (!file) return;
+
+  setButtonLoading(previewBtn, true, 'Parsing...');
 
   const reader = new FileReader();
   reader.onload = (e) => {
@@ -384,6 +479,7 @@ previewBtn.addEventListener('click', () => {
       previewList.innerHTML = '<div class="preview-item">No valid entries found in CSV file.</div>';
       previewArea.classList.remove('hidden');
       importBtn.disabled = true;
+      setButtonLoading(previewBtn, false);
       return;
     }
 
@@ -396,7 +492,7 @@ previewBtn.addEventListener('click', () => {
         } catch {
           domain = entry.website_url;
         }
-        return `<div class="preview-item"><strong>${escapeHtml(domain)}</strong> &mdash; ${escapeHtml(entry.username)}</div>`;
+        return `<div class="preview-item"><strong>${escapeHtml(domain)}</strong> - ${escapeHtml(entry.username)}</div>`;
       })
       .join('');
 
@@ -406,17 +502,23 @@ previewBtn.addEventListener('click', () => {
 
     previewArea.classList.remove('hidden');
     importBtn.disabled = false;
+    showToast(`Preview ready: ${parsedEntries.length} entries.`, 'success');
+    setButtonLoading(previewBtn, false);
   };
+
+  reader.onerror = () => {
+    showToast('Could not read CSV file.', 'error');
+    setButtonLoading(previewBtn, false);
+  };
+
   reader.readAsText(file);
 });
 
 importBtn.addEventListener('click', async () => {
   if (!parsedEntries.length) return;
 
-  importBtn.disabled = true;
-  importBtn.textContent = 'Importing...';
-  importStatus.className = 'status';
-  importStatus.textContent = `Importing ${parsedEntries.length} entries...`;
+  setButtonLoading(importBtn, true, 'Importing...');
+  showImportStatus(`Importing ${parsedEntries.length} entries...`, 'success', false);
 
   try {
     const result = await new Promise((resolve, reject) => {
@@ -440,14 +542,11 @@ importBtn.addEventListener('click', async () => {
       );
     });
 
-    importStatus.className = 'status success';
-    importStatus.textContent = `Done! Imported: ${result.imported}, Skipped: ${result.skipped}, Failed: ${result.failed}`;
+    showImportStatus(`Done! Imported: ${result.imported}, Skipped: ${result.skipped}, Failed: ${result.failed}`, 'success', true);
   } catch (err) {
-    importStatus.className = 'status error';
-    importStatus.textContent = `Import failed: ${err.message}`;
+    showImportStatus(`Import failed: ${err.message}`, 'error', true);
   } finally {
-    importBtn.disabled = false;
-    importBtn.textContent = 'Import';
+    setButtonLoading(importBtn, false);
   }
 });
 
