@@ -7,148 +7,298 @@
 </head>
 <body>
   <div class="container">
-    <h1>Yurrr Password Manager</h1>
-    <h2>Settings</h2>
+    <header class="page-header">
+      <h1>
+        <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 3.5v3" />
+          <path d="M12 17.5v3" />
+          <path d="m4.8 7 2.1 2.1" />
+          <path d="m17.1 14.9 2.1 2.1" />
+          <path d="M3.5 12h3" />
+          <path d="M17.5 12h3" />
+          <path d="m4.8 17 2.1-2.1" />
+          <path d="m17.1 9.1 2.1-2.1" />
+          <circle cx="12" cy="12" r="4" />
+        </svg>
+        Yurrr Password Manager
+      </h1>
+      <p>Configure server access, security behavior, email suggestions, and import options.</p>
+    </header>
 
-    <div class="field">
-      <label for="server-url">Server URL</label>
-      <input type="text" id="server-url" placeholder="https://192.168.1.50:8443">
-      <small>The address of your Yurrr server on your local network</small>
-    </div>
-
-    <div class="actions">
-      <button id="test-btn" class="btn btn-secondary">Test Connection</button>
-      <button id="save-btn" class="btn btn-primary">Save</button>
-    </div>
-
-    <div id="status" class="status hidden"></div>
-
-    <hr class="divider">
-
-    <h2>Security</h2>
-
-    <div class="field">
-      <label for="session-mode">Session Persistence</label>
-      <select id="session-mode">
-        <option value="ephemeral">Lock on browser restart (default)</option>
-        <option value="persistent">Lock when laptop locks</option>
-        <option value="inactivity">Lock after inactivity (relaxed)</option>
-      </select>
-      <small>Controls when the vault locks. "Relaxed" mode stays unlocked across browser restarts and system locks, locking only after inactivity.</small>
-    </div>
-
-    <div class="field" id="auto-lock-field" style="display: none;">
-      <label for="auto-lock-minutes">Inactivity Timeout (minutes)</label>
-      <input type="number" id="auto-lock-minutes" min="1" max="1440" value="15">
-      <small>Lock the vault after this many minutes of inactivity (1–1440)</small>
-    </div>
-
-    <div class="actions">
-      <button id="save-session-btn" class="btn btn-primary">Save</button>
-    </div>
-
-    <div id="session-status" class="status hidden"></div>
-
-    <hr class="divider">
-
-    <h2>Email Suggestions</h2>
-
-    <div class="field">
-      <label for="email-suggestions">Suggested Email Addresses</label>
-      <textarea id="email-suggestions" rows="5" placeholder="alice@gmail.com&#10;work@company.com"></textarea>
-      <small>One address per line. Used on signup/registration forms for quick email suggestions (Gmail and any other domain).</small>
-    </div>
-
-    <div class="actions">
-      <button id="save-emails-btn" class="btn btn-primary">Save</button>
-    </div>
-
-    <div class="field">
-      <label>Auto-Detected Email Addresses</label>
-      <div class="auto-email-controls">
-        <button id="select-all-auto-emails-btn" class="btn btn-secondary" type="button">Select All</button>
-        <button id="select-none-auto-emails-btn" class="btn btn-secondary" type="button">Select None</button>
+    <section class="settings-section">
+      <div class="section-title">
+        <h2>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M10 14 20 4" />
+            <path d="M14 4h6v6" />
+            <path d="M20 14v4a2 2 0 0 1-2 2h-4" />
+            <path d="M10 20H6a2 2 0 0 1-2-2v-4" />
+            <path d="M4 10V6a2 2 0 0 1 2-2h4" />
+          </svg>
+          Server
+        </h2>
       </div>
-      <div id="auto-email-selection-list" class="auto-email-selection-list"></div>
-      <small>Select which detected emails should be suggested in signup/login forms.</small>
-    </div>
 
-    <div class="actions">
-      <button id="import-vault-emails-btn" class="btn btn-secondary">Import From Vault</button>
-      <button id="clear-auto-emails-btn" class="btn btn-secondary">Clear Auto-Detected</button>
-    </div>
+      <div class="field">
+        <label for="server-url">Server URL</label>
+        <input type="text" id="server-url" placeholder="https://192.168.1.50:8443">
+        <small>The address of your Yurrr server on your local network.</small>
+      </div>
 
-    <div id="email-status" class="status hidden"></div>
+      <div class="actions">
+        <button id="test-btn" class="btn btn-secondary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <span class="btn-label">Test Connection</span>
+          </span>
+        </button>
+        <button id="save-btn" class="btn btn-primary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m5 12 4 4 10-10" />
+            </svg>
+            <span class="btn-label">Save</span>
+          </span>
+        </button>
+      </div>
 
-    <div class="instructions">
-      <h3>Self-Signed Certificate</h3>
-      <p>Since the server uses a self-signed certificate, you need to accept it in Brave first:</p>
-      <ol>
-        <li>Open your server URL directly in a new tab (e.g., <code>https://192.168.1.50:8443/api/v1/auth/status</code>)</li>
-        <li>Click "Advanced" then "Proceed to ... (unsafe)"</li>
-        <li>You should see a JSON response — the extension can now connect</li>
-      </ol>
-    </div>
+      <div id="status" class="status hidden" aria-live="polite"></div>
+    </section>
 
-    <hr class="divider">
+    <section class="settings-section">
+      <div class="section-title">
+        <h2>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M8.5 10V7.5a3.5 3.5 0 1 1 7 0V10" />
+            <rect x="5" y="10" width="14" height="10" rx="2" />
+            <path d="M12 14v2.5" />
+          </svg>
+          Security
+        </h2>
+      </div>
 
-    <h2>Import Passwords</h2>
+      <div class="field">
+        <label for="session-mode">Session Persistence</label>
+        <select id="session-mode">
+          <option value="ephemeral">Lock on browser restart (default)</option>
+          <option value="persistent">Lock when laptop locks</option>
+          <option value="inactivity">Lock after inactivity (relaxed)</option>
+        </select>
+        <small>Controls when the vault locks. "Relaxed" mode stays unlocked across browser restarts and system locks, locking only after inactivity.</small>
+      </div>
 
-    <div class="field">
-      <label for="browser-select">Browser</label>
-      <select id="browser-select">
-        <option value="chrome">Chrome / Brave</option>
-        <option value="firefox">Firefox</option>
-      </select>
-      <small>Select the browser your CSV was exported from</small>
-    </div>
+      <div class="field" id="auto-lock-field" style="display: none;">
+        <label for="auto-lock-minutes">Inactivity Timeout (minutes)</label>
+        <input type="number" id="auto-lock-minutes" min="1" max="1440" value="15">
+        <small>Lock the vault after this many minutes of inactivity (1–1440).</small>
+      </div>
 
-    <div class="field">
-      <label for="csv-file">CSV File</label>
-      <input type="file" id="csv-file" accept=".csv">
-    </div>
+      <div class="actions">
+        <button id="save-session-btn" class="btn btn-primary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m5 12 4 4 10-10" />
+            </svg>
+            <span class="btn-label">Save</span>
+          </span>
+        </button>
+      </div>
 
-    <div class="field">
-      <label>
-        <input type="checkbox" id="skip-duplicates" checked>
-        Skip duplicates (same website + username)
-      </label>
-    </div>
+      <div id="session-status" class="status hidden" aria-live="polite"></div>
+    </section>
 
-    <div class="actions">
-      <button id="preview-btn" class="btn btn-secondary" disabled>Preview</button>
-      <button id="import-btn" class="btn btn-primary" disabled>Import</button>
-    </div>
+    <section class="settings-section">
+      <div class="section-title">
+        <h2>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 4v16" />
+            <path d="M4 12h16" />
+          </svg>
+          Email Suggestions
+        </h2>
+      </div>
 
-    <div id="preview-area" class="preview-area hidden">
-      <h3>Preview (<span id="preview-count">0</span> entries)</h3>
-      <div id="preview-list" class="preview-list"></div>
-    </div>
+      <div class="field">
+        <label for="email-suggestions">Suggested Email Addresses</label>
+        <textarea id="email-suggestions" rows="5" placeholder="alice@gmail.com&#10;work@company.com"></textarea>
+        <small>One address per line. Used on signup/registration forms for quick email suggestions.</small>
+      </div>
 
-    <div id="import-status" class="status hidden"></div>
+      <div class="actions">
+        <button id="save-emails-btn" class="btn btn-primary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m5 12 4 4 10-10" />
+            </svg>
+            <span class="btn-label">Save</span>
+          </span>
+        </button>
+      </div>
 
-    <div class="instructions">
-      <h3>How to Export Passwords</h3>
-      <details>
-        <summary>Chrome / Brave</summary>
+      <div class="field">
+        <label>Auto-Detected Email Addresses</label>
+        <div class="auto-email-controls">
+          <button id="select-all-auto-emails-btn" class="btn btn-secondary" type="button">
+            <span class="btn-content">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="m5 12 4 4 10-10" />
+              </svg>
+              <span class="btn-label">Select All</span>
+            </span>
+          </button>
+          <button id="select-none-auto-emails-btn" class="btn btn-secondary" type="button">
+            <span class="btn-content">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="m6 6 12 12" />
+                <path d="m18 6-12 12" />
+              </svg>
+              <span class="btn-label">Select None</span>
+            </span>
+          </button>
+        </div>
+        <div id="auto-email-selection-list" class="auto-email-selection-list"></div>
+        <small>Select which detected emails should be suggested in signup/login forms.</small>
+      </div>
+
+      <div class="actions">
+        <button id="import-vault-emails-btn" class="btn btn-secondary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M10 14 20 4" />
+              <path d="M14 4h6v6" />
+              <path d="M20 14v4a2 2 0 0 1-2 2h-4" />
+              <path d="M10 20H6a2 2 0 0 1-2-2v-4" />
+              <path d="M4 10V6a2 2 0 0 1 2-2h4" />
+            </svg>
+            <span class="btn-label">Import From Vault</span>
+          </span>
+        </button>
+        <button id="clear-auto-emails-btn" class="btn btn-secondary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m6 6 12 12" />
+              <path d="m18 6-12 12" />
+            </svg>
+            <span class="btn-label">Clear Auto-Detected</span>
+          </span>
+        </button>
+      </div>
+
+      <div id="email-status" class="status hidden" aria-live="polite"></div>
+
+      <div class="instructions">
+        <h3>Self-Signed Certificate</h3>
+        <p>Since the server uses a self-signed certificate, you need to accept it in Brave first:</p>
         <ol>
-          <li>Open <code>chrome://password-manager/settings</code> (or <code>brave://password-manager/settings</code>)</li>
-          <li>Click "Download file" under "Export passwords"</li>
-          <li>Confirm with your system password</li>
-          <li>Select the downloaded CSV file above</li>
+          <li>Open your server URL directly in a new tab (e.g., <code>https://192.168.1.50:8443/api/v1/auth/status</code>)</li>
+          <li>Click "Advanced" then "Proceed to ... (unsafe)"</li>
+          <li>You should see a JSON response — the extension can now connect.</li>
         </ol>
-      </details>
-      <details>
-        <summary>Firefox</summary>
-        <ol>
-          <li>Open <code>about:logins</code></li>
-          <li>Click the three dots menu (...) in the top right</li>
-          <li>Select "Export Logins..."</li>
-          <li>Confirm and save the CSV file</li>
-          <li>Select the saved CSV file above</li>
-        </ol>
-      </details>
-    </div>
+      </div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <h2>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="3.5" y="6" width="17" height="12" rx="2.2" />
+            <path d="M3.5 10h17" />
+            <path d="M8 14h3" />
+          </svg>
+          Import Passwords
+        </h2>
+      </div>
+
+      <div class="field">
+        <label for="browser-select">Browser</label>
+        <select id="browser-select">
+          <option value="chrome">Chrome / Brave</option>
+          <option value="firefox">Firefox</option>
+        </select>
+        <small>Select the browser your CSV was exported from.</small>
+      </div>
+
+      <div class="field">
+        <label for="csv-file">CSV File</label>
+        <input type="file" id="csv-file" accept=".csv">
+      </div>
+
+      <div class="field">
+        <label class="checkbox-row" for="skip-duplicates">
+          <input type="checkbox" id="skip-duplicates" checked>
+          <span class="checkbox-indicator" aria-hidden="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m5 12 4 4 10-10" />
+            </svg>
+          </span>
+          <span>Skip duplicates (same website + username)</span>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="preview-btn" class="btn btn-secondary" disabled type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="m16 16 4 4" />
+            </svg>
+            <span class="btn-label">Preview</span>
+          </span>
+        </button>
+        <button id="import-btn" class="btn btn-primary" disabled type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 5v14" />
+              <path d="M5 12h14" />
+            </svg>
+            <span class="btn-label">Import</span>
+          </span>
+        </button>
+      </div>
+
+      <div id="preview-area" class="preview-area hidden">
+        <h3>Preview (<span id="preview-count">0</span> entries)</h3>
+        <div id="preview-list" class="preview-list"></div>
+      </div>
+
+      <div id="import-status" class="status hidden" aria-live="polite"></div>
+
+      <div class="instructions">
+        <h3>How to Export Passwords</h3>
+        <details>
+          <summary>
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m9 6 6 6-6 6" />
+            </svg>
+            Chrome / Brave
+          </summary>
+          <ol>
+            <li>Open <code>chrome://password-manager/settings</code> (or <code>brave://password-manager/settings</code>)</li>
+            <li>Click "Download file" under "Export passwords"</li>
+            <li>Confirm with your system password</li>
+            <li>Select the downloaded CSV file above</li>
+          </ol>
+        </details>
+        <details>
+          <summary>
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m9 6 6 6-6 6" />
+            </svg>
+            Firefox
+          </summary>
+          <ol>
+            <li>Open <code>about:logins</code></li>
+            <li>Click the three dots menu (...) in the top right</li>
+            <li>Select "Export Logins..."</li>
+            <li>Confirm and save the CSV file</li>
+            <li>Select the saved CSV file above</li>
+          </ol>
+        </details>
+      </div>
+    </section>
   </div>
 
   <script src="csv-parser.js"></script>

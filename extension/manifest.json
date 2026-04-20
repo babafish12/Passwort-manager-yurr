@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Yurrr Password Manager",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local network password manager",
   "permissions": ["storage", "activeTab", "scripting", "alarms", "idle"],
   "host_permissions": ["https://*/*", "http://*/*"],

@@ -15,6 +15,23 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 
 ## Changelog
 
+### v0.7.0 — 2026-04-20 — Session Timeout Fix + UI Refresh
+
+- Server session defaults are now generous and configurable via environment variables:
+  - `YURRR_JWT_EXPIRY_HOURS` (default: `24`)
+  - `YURRR_INACTIVITY_TIMEOUT_MINUTES` (default: `240`)
+- This fixes the mismatch where strict server-side limits overruled higher extension inactivity settings (for example 150 minutes).
+- Verified: extension inactivity timeout logic still uses minutes consistently and applies values correctly to alarms and elapsed-time checks.
+- Popup UI modernized:
+  - design tokens / CSS variables introduced for colors, radii, shadows, and transitions
+  - inline SVG icon system replacing emoji/unicode icons
+  - animated screen transitions (list/detail/form), login fade-in, improved hover/press interactions, and animated toasts
+  - loading spinners for key actions (unlock/save) and improved keyboard focus rings
+- Options UI modernized:
+  - clearer section grouping with more whitespace and consistent component styling
+  - custom-styled checkbox/switch controls
+  - toast-based feedback and loading spinners for save/import flows
+
 ### v0.6.0 — Email Selection, Cards/Addresses Tabs, and Session-Loss Handling
 
 - **Email suggestions** are now combined from:

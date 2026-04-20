@@ -19,6 +19,7 @@ const EntryList = {
 
   async show() {
     this.screen.classList.remove('hidden');
+    window.animatePopupScreen?.(this.screen, 'back');
     this.searchInput.value = '';
     this.searchInput.focus();
 
@@ -70,6 +71,7 @@ const EntryList = {
           <div class="entry-domain">${escapeHtml(e.website_domain)}</div>
           <div class="entry-username">${escapeHtml(e.username)}</div>
         </div>
+        <span class="entry-chevron">${window.getPopupIcon ? window.getPopupIcon('chevronRight', 'icon-xs') : ''}</span>
       </div>
     `
       )

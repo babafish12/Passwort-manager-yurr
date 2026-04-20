@@ -31,9 +31,11 @@ const EntryForm = {
     this.passwordInput.value = '';
     this.notesInput.value = '';
     this.passwordInput.type = 'password';
+    this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
 
     EntryList.hide();
     this.screen.classList.remove('hidden');
+    window.animatePopupScreen?.(this.screen, 'forward');
     this.urlInput.focus();
     PasswordGenerator.updateStrength('');
   },
@@ -46,9 +48,11 @@ const EntryForm = {
     this.passwordInput.value = entry.password;
     this.notesInput.value = entry.notes || '';
     this.passwordInput.type = 'password';
+    this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
 
     EntryDetail.hide();
     this.screen.classList.remove('hidden');
+    window.animatePopupScreen?.(this.screen, 'forward');
     PasswordGenerator.updateStrength(entry.password);
   },
 
@@ -63,6 +67,9 @@ const EntryForm = {
 
   togglePassword() {
     this.passwordInput.type = this.passwordInput.type === 'password' ? 'text' : 'password';
+    this.togglePwBtn.innerHTML = window.getPopupIcon
+      ? window.getPopupIcon(this.passwordInput.type === 'password' ? 'eye' : 'eyeOff', 'icon-sm')
+      : '';
   },
 
   async generatePassword() {
@@ -73,7 +80,7 @@ const EntryForm = {
       PasswordGenerator.updateStrength(result.password);
     } catch (err) {
       if (isSessionLostError(err)) return;
-      showToast('Error: ' + err.message);
+      showToast('Error: ' + err.message, 'error');
     }
   },
 
@@ -84,12 +91,11 @@ const EntryForm = {
     const notes = this.notesInput.value.trim();
 
     if (!url || !username || !password) {
-      showToast('URL, username, and password are required');
+      showToast('URL, username, and password are required', 'error');
       return;
     }
 
-    this.saveBtn.disabled = true;
-    this.saveBtn.textContent = 'Saving...';
+    window.setButtonLoading?.(this.saveBtn, true, 'Saving...');
 
     try {
       if (this.editingId) {
@@ -112,10 +118,9 @@ const EntryForm = {
       EntryList.show();
     } catch (err) {
       if (isSessionLostError(err)) return;
-      showToast('Error: ' + err.message);
+      showToast('Error: ' + err.message, 'error');
     } finally {
-      this.saveBtn.disabled = false;
-      this.saveBtn.textContent = 'Save';
+      window.setButtonLoading?.(this.saveBtn, false);
     }
   },
 };

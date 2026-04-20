@@ -2,6 +2,7 @@
 const LoginScreen = {
   init() {
     this.screen = document.getElementById('login-screen');
+    this.loginForm = this.screen.querySelector('.login-form');
     this.passwordInput = document.getElementById('master-password');
     this.unlockBtn = document.getElementById('unlock-btn');
     this.errorEl = document.getElementById('login-error');
@@ -18,6 +19,11 @@ const LoginScreen = {
 
   async show() {
     this.screen.classList.remove('hidden');
+    window.animatePopupScreen?.(this.screen, 'back');
+    if (this.loginForm) {
+      this.loginForm.classList.remove('login-form-animate');
+      requestAnimationFrame(() => this.loginForm.classList.add('login-form-animate'));
+    }
     this.errorEl.classList.add('hidden');
     this.passwordInput.value = '';
     this.passwordInput.focus();
@@ -97,8 +103,7 @@ const LoginScreen = {
     const password = this.passwordInput.value;
     if (!password) return;
 
-    this.unlockBtn.disabled = true;
-    this.unlockBtn.textContent = 'Unlocking...';
+    window.setButtonLoading?.(this.unlockBtn, true, 'Unlocking...');
     this.errorEl.classList.add('hidden');
 
     try {
@@ -114,8 +119,7 @@ const LoginScreen = {
       this.errorEl.textContent = err.message || 'Login failed';
       this.errorEl.classList.remove('hidden');
     } finally {
-      this.unlockBtn.disabled = false;
-      this.unlockBtn.textContent = 'Unlock';
+      window.setButtonLoading?.(this.unlockBtn, false);
     }
   },
 
@@ -127,8 +131,7 @@ const LoginScreen = {
       return;
     }
 
-    this.setupBtn.disabled = true;
-    this.setupBtn.textContent = 'Setting up...';
+    window.setButtonLoading?.(this.setupBtn, true, 'Setting up...');
 
     try {
       await sendMessage('SETUP', { masterPassword: password });
@@ -139,8 +142,7 @@ const LoginScreen = {
       this.errorEl.textContent = err.message || 'Setup failed';
       this.errorEl.classList.remove('hidden');
     } finally {
-      this.setupBtn.disabled = false;
-      this.setupBtn.textContent = 'Initialize Vault';
+      window.setButtonLoading?.(this.setupBtn, false);
     }
   },
 };

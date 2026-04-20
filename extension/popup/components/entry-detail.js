@@ -63,7 +63,7 @@ const EntryDetail = {
       this.urlEl.textContent = entry.website_url;
       this.usernameEl.textContent = entry.username;
       this.passwordEl.textContent = '\u2022'.repeat(12);
-      this.togglePwBtn.innerHTML = '&#128065;';
+      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
 
       if (entry.notes) {
         this.notesEl.textContent = entry.notes;
@@ -74,9 +74,10 @@ const EntryDetail = {
 
       EntryList.hide();
       this.screen.classList.remove('hidden');
+      window.animatePopupScreen?.(this.screen, 'forward');
     } catch (err) {
       if (isSessionLostError(err)) return;
-      showToast('Error: ' + err.message);
+      showToast('Error: ' + err.message, 'error');
     }
   },
 
@@ -90,11 +91,11 @@ const EntryDetail = {
     if (this.passwordVisible) {
       this.passwordEl.textContent = this.currentEntry.password;
       this.passwordEl.classList.remove('password-masked');
-      this.togglePwBtn.innerHTML = '&#128064;';
+      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eyeOff', 'icon-sm') : '';
     } else {
       this.passwordEl.textContent = '\u2022'.repeat(12);
       this.passwordEl.classList.add('password-masked');
-      this.togglePwBtn.innerHTML = '&#128065;';
+      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
     }
   },
 
@@ -120,7 +121,7 @@ const EntryDetail = {
       EntryList.show();
     } catch (err) {
       if (isSessionLostError(err)) return;
-      showToast('Error: ' + err.message);
+      showToast('Error: ' + err.message, 'error');
     }
   },
 };
