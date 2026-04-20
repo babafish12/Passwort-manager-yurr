@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 
-use crate::config::{INACTIVITY_TIMEOUT, JWT_EXPIRY_HOURS};
+use crate::config::{inactivity_timeout, jwt_expiry_hours};
 use crate::errors::AppError;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,7 +42,7 @@ impl SessionStore {
 
     pub fn create_token(&self, session_id: &str) -> Result<String, jsonwebtoken::errors::Error> {
         let expiry = chrono::Utc::now()
-            + chrono::Duration::hours(JWT_EXPIRY_HOURS as i64);
+            + chrono::Duration::hours(jwt_expiry_hours() as i64);
         let claims = Claims {
             sub: session_id.to_string(),
             exp: expiry.timestamp() as usize,
@@ -78,7 +78,7 @@ impl SessionStore {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             // Check inactivity timeout
-            if session.last_activity.elapsed() > INACTIVITY_TIMEOUT {
+            if session.last_activity.elapsed() > inactivity_timeout() {
                 sessions.remove(session_id);
                 return None;
             }
@@ -96,7 +96,7 @@ impl SessionStore {
 
     pub async fn cleanup_expired(&self) {
         let mut sessions = self.sessions.write().await;
-        let timeout = INACTIVITY_TIMEOUT;
+        let timeout = inactivity_timeout();
         sessions.retain(|_, data| data.last_activity.elapsed() < timeout);
     }
 }

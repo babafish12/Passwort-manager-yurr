@@ -1,11 +1,35 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const SERVER_PORT: u16 = 8443;
 pub const SERVER_ADDR: &str = "0.0.0.0";
 
-// JWT
-pub const JWT_EXPIRY_HOURS: u64 = 1;
-pub const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(15 * 60); // 15 minutes
+// JWT + session timeout defaults
+pub const DEFAULT_JWT_EXPIRY_HOURS: u64 = 24;
+pub const DEFAULT_INACTIVITY_TIMEOUT_MINUTES: u64 = 240;
+
+fn env_u64(key: &str) -> Option<u64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+}
+
+pub fn jwt_expiry_hours() -> u64 {
+    static VALUE: OnceLock<u64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        env_u64("YURRR_JWT_EXPIRY_HOURS").unwrap_or(DEFAULT_JWT_EXPIRY_HOURS)
+    })
+}
+
+pub fn inactivity_timeout() -> Duration {
+    static VALUE: OnceLock<Duration> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        let minutes = env_u64("YURRR_INACTIVITY_TIMEOUT_MINUTES")
+            .unwrap_or(DEFAULT_INACTIVITY_TIMEOUT_MINUTES);
+        Duration::from_secs(minutes * 60)
+    })
+}
 
 // Argon2id parameters (tuned for Raspberry Pi)
 pub const ARGON2_M_COST: u32 = 16384; // 16 MB
