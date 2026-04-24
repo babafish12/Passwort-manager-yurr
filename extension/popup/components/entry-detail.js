@@ -64,6 +64,8 @@ const EntryDetail = {
       this.usernameEl.textContent = entry.username;
       this.passwordEl.textContent = '\u2022'.repeat(12);
       this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
+      this.togglePwBtn.title = 'Show password';
+      this.togglePwBtn.setAttribute('aria-label', 'Show password');
 
       if (entry.notes) {
         this.notesEl.textContent = entry.notes;
@@ -92,10 +94,14 @@ const EntryDetail = {
       this.passwordEl.textContent = this.currentEntry.password;
       this.passwordEl.classList.remove('password-masked');
       this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eyeOff', 'icon-sm') : '';
+      this.togglePwBtn.title = 'Hide password';
+      this.togglePwBtn.setAttribute('aria-label', 'Hide password');
     } else {
       this.passwordEl.textContent = '\u2022'.repeat(12);
       this.passwordEl.classList.add('password-masked');
       this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
+      this.togglePwBtn.title = 'Show password';
+      this.togglePwBtn.setAttribute('aria-label', 'Show password');
     }
   },
 
@@ -112,11 +118,21 @@ const EntryDetail = {
 
   async handleDelete() {
     if (!this.currentEntry) return;
-    if (!confirm(`Delete credentials for ${this.currentEntry.website_domain}?`)) return;
+
+    const domainLabel = this.currentEntry.website_domain || 'this entry';
+    const shouldDelete = await window.showConfirmDialog({
+      title: 'Delete Password',
+      message: `Delete "${window.truncateText ? window.truncateText(domainLabel) : domainLabel}"? This cannot be undone.`,
+      confirmText: 'Delete Entry',
+      cancelText: 'Cancel',
+      confirmIcon: 'trash',
+      destructive: true,
+    });
+    if (!shouldDelete) return;
 
     try {
       await sendMessage('DELETE_ENTRY', { id: this.currentEntry.id });
-      showToast('Entry deleted');
+      showToast(`Deleted ${window.truncateText ? window.truncateText(domainLabel) : domainLabel}`);
       this.hide();
       EntryList.show();
     } catch (err) {

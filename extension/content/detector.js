@@ -3,6 +3,7 @@ const YurrrDetector = {
   initialized: false,
   detectedForms: new WeakSet(),
   activePicker: null,
+  activeEmailPicker: null,
   scanQueued: false,
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
@@ -18,10 +19,9 @@ const YurrrDetector = {
     if (this.initialized) return;
     this.initialized = true;
 
+    this.removeEmailSuggestionsDatalist();
     this.checkPendingCredentials();
     this.scanForms();
-    this.discoverEmailsFromGoogleContext();
-    this.backfillEmailsFromVault();
 
     // Watch for DOM changes (SPAs) — debounced via rAF
     const observer = new MutationObserver(() => {
@@ -43,7 +43,9 @@ const YurrrDetector = {
           return;
         }
         if (resp?.error) {
-          reject(new Error(resp.error));
+          const error = new Error(resp.error);
+          error.code = resp.code || '';
+          reject(error);
           return;
         }
         resolve(resp);
@@ -81,28 +83,10 @@ const YurrrDetector = {
     }
 
     try {
-      const result = await chrome.storage.local.get([
-        this.EMAIL_SUGGESTIONS_KEY,
-        this.AUTO_EMAIL_SUGGESTIONS_KEY,
-        this.AUTO_EMAIL_SELECTED_KEY,
-      ]);
-      const manualSuggestions = this.parseEmailSuggestions(result[this.EMAIL_SUGGESTIONS_KEY]);
-      const allAutoSuggestions = this.parseEmailSuggestions(result[this.AUTO_EMAIL_SUGGESTIONS_KEY]);
-      const hasSelectedAutoEmails = Array.isArray(result[this.AUTO_EMAIL_SELECTED_KEY]);
-      const selectedAutoEmails = this.parseEmailSuggestions(result[this.AUTO_EMAIL_SELECTED_KEY]);
-      const selectedSet = new Set(selectedAutoEmails.map((email) => this.normalizeEmail(email)));
-      const autoSuggestions = hasSelectedAutoEmails
-        ? allAutoSuggestions.filter((email) => selectedSet.has(this.normalizeEmail(email)))
-        : allAutoSuggestions;
-      let vaultSuggestions = [];
-      try {
-        const vaultResp = await this.sendRuntimeMessage('GET_KNOWN_EMAIL_USERNAMES');
-        vaultSuggestions = this.parseEmailSuggestions(vaultResp?.emails);
-      } catch {
-        // locked/offline or unavailable
-      }
-
-      const combined = this.mergeEmailLists(manualSuggestions, autoSuggestions, vaultSuggestions);
+      const result = await this.sendRuntimeMessage('GET_EMAIL_SUGGESTIONS', {
+        pageUrl: window.location.href,
+      });
+      const combined = this.parseEmailSuggestions(result?.emails);
       this.emailSuggestionsCache = combined;
       this.emailSuggestionsCacheAt = now;
       return combined;
@@ -135,33 +119,218 @@ const YurrrDetector = {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
   },
 
-  ensureEmailSuggestionsDatalist(suggestions) {
-    let dataList = document.getElementById(this.EMAIL_SUGGESTIONS_LIST_ID);
-    if (!dataList) {
-      dataList = document.createElement('datalist');
-      dataList.id = this.EMAIL_SUGGESTIONS_LIST_ID;
-      document.body.appendChild(dataList);
+  parseUrl(value) {
+    try {
+      return new URL(value);
+    } catch {
+      return null;
+    }
+  },
+
+  normalizeHostname(hostname) {
+    return String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+  },
+
+  isPrivateIPv4(hostname) {
+    const parts = this.normalizeHostname(hostname).split('.');
+    if (parts.length !== 4) return false;
+    const nums = parts.map((part) => Number.parseInt(part, 10));
+    if (nums.some((num, idx) => !Number.isInteger(num) || String(num) !== parts[idx] || num < 0 || num > 255)) {
+      return false;
     }
 
-    const existing = Array.from(dataList.querySelectorAll('option')).map((option) => option.value);
-    if (existing.length === suggestions.length && existing.every((value, idx) => value === suggestions[idx])) {
+    return (
+      nums[0] === 10 ||
+      nums[0] === 127 ||
+      (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) ||
+      (nums[0] === 192 && nums[1] === 168) ||
+      (nums[0] === 169 && nums[1] === 254)
+    );
+  },
+
+  isPrivateIPv6(hostname) {
+    const host = this.normalizeHostname(hostname);
+    return (
+      host === '::1' ||
+      /^f[cd][0-9a-f]*:/i.test(host) ||
+      /^fe80:/i.test(host)
+    );
+  },
+
+  isHttpDevHost(hostname) {
+    const host = this.normalizeHostname(hostname);
+    return (
+      host === 'localhost' ||
+      host.endsWith('.localhost') ||
+      this.isPrivateIPv4(host) ||
+      this.isPrivateIPv6(host)
+    );
+  },
+
+  isCredentialPageAllowed() {
+    const url = this.parseUrl(window.location.href);
+    if (!url) return false;
+    if (url.protocol === 'https:') return true;
+    if (url.protocol === 'http:') return this.isHttpDevHost(url.hostname);
+    return false;
+  },
+
+  removeEmailSuggestionsDatalist() {
+    const dataList = document.getElementById(this.EMAIL_SUGGESTIONS_LIST_ID);
+    if (dataList) dataList.remove();
+
+    document
+      .querySelectorAll(`input[list="${this.EMAIL_SUGGESTIONS_LIST_ID}"]`)
+      .forEach((field) => field.removeAttribute('list'));
+  },
+
+  applyEmailSuggestions(field) {
+    if (!field) return;
+    if (!this.isCredentialPageAllowed()) return;
+    if (!YurrrHeuristics.isLikelyEmailField(field)) return;
+    if (field.getAttribute('list') === this.EMAIL_SUGGESTIONS_LIST_ID) {
+      field.removeAttribute('list');
+    }
+    this.attachEmailPicker(field);
+  },
+
+  attachEmailPicker(field) {
+    if (!field || field.dataset.yurrrEmailPickerAttached === '1') return;
+    field.dataset.yurrrEmailPickerAttached = '1';
+
+    const openPicker = () => {
+      this.showEmailPicker(field);
+    };
+
+    field.addEventListener('focus', openPicker);
+    field.addEventListener('click', openPicker);
+  },
+
+  async showEmailPicker(field) {
+    if (!field || !YurrrHeuristics.isLikelyEmailField(field)) return;
+    if (!this.isCredentialPageAllowed()) return;
+
+    const suggestions = await this.loadEmailSuggestions();
+    if (!suggestions.length) {
+      this.hideEmailPicker();
       return;
     }
 
-    dataList.innerHTML = suggestions
-      .map((email) => `<option value="${this.escapeHtml(email)}"></option>`)
-      .join('');
+    this.hideEmailPicker();
+
+    const host = document.createElement('div');
+    Object.assign(host.style, {
+      position: 'absolute',
+      zIndex: '2147483647',
+      margin: '0',
+      padding: '0',
+    });
+
+    const shadow = host.attachShadow({ mode: 'closed' });
+    shadow.innerHTML = `
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        .picker {
+          background: #1a1a2e;
+          border: 1px solid #2ecc71;
+          border-radius: 8px;
+          box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+          color: #e0e0e0;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          overflow: hidden;
+        }
+        .header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+          padding: 10px 14px;
+          background: #16213e;
+          border-bottom: 1px solid #0f3460;
+        }
+        .title { font-weight: 700; color: #2ecc71; font-size: 13px; }
+        .subtitle { color: #888; font-size: 11px; }
+        .list { max-height: 220px; overflow-y: auto; padding: 4px 0; }
+        .item {
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 600;
+          overflow: hidden;
+          padding: 10px 14px;
+          text-overflow: ellipsis;
+          transition: background 0.12s;
+          white-space: nowrap;
+        }
+        .item:hover { background: #16213e; }
+      </style>
+      <div class="picker">
+        <div class="header">
+          <span class="title">Yurrr</span>
+          <span class="subtitle">E-Mail</span>
+        </div>
+        <div class="list">
+          ${suggestions
+            .map((email, i) => `<div class="item" data-index="${i}">${this.escapeHtml(email)}</div>`)
+            .join('')}
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(host);
+    this.activeEmailPicker = host;
+
+    const rect = field.getBoundingClientRect();
+    host.style.top = `${rect.bottom + window.scrollY + 4}px`;
+    host.style.left = `${rect.left + window.scrollX}px`;
+    host.style.minWidth = `${Math.max(260, rect.width)}px`;
+
+    const closePicker = () => {
+      if (this.activeEmailPicker === host) {
+        this.activeEmailPicker = null;
+      }
+      host.remove();
+      document.removeEventListener('click', outsideClickHandler);
+      document.removeEventListener('keydown', escHandler);
+    };
+
+    shadow.querySelectorAll('.item').forEach((item) => {
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const idx = Number.parseInt(item.dataset.index, 10);
+        const email = suggestions[idx];
+        this.fillEmailField(field, email);
+        this.rememberUsername(window.location.hostname, window.location.href, email);
+        closePicker();
+      });
+    });
+
+    const outsideClickHandler = (e) => {
+      if (!host.contains(e.target) && e.target !== field) {
+        closePicker();
+      }
+    };
+    setTimeout(() => document.addEventListener('click', outsideClickHandler), 0);
+
+    const escHandler = (e) => {
+      if (e.key === 'Escape') closePicker();
+    };
+    document.addEventListener('keydown', escHandler);
   },
 
-  async applyEmailSuggestions(field) {
-    if (!field) return;
-    if (!YurrrHeuristics.isLikelyEmailField(field)) return;
+  hideEmailPicker() {
+    if (this.activeEmailPicker) {
+      this.activeEmailPicker.remove();
+      this.activeEmailPicker = null;
+    }
+  },
 
-    const suggestions = await this.loadEmailSuggestions();
-    if (!suggestions.length) return;
-
-    this.ensureEmailSuggestionsDatalist(suggestions);
-    field.setAttribute('list', this.EMAIL_SUGGESTIONS_LIST_ID);
+  fillEmailField(field, email) {
+    if (!field || !email) return;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    nativeSetter.call(field, email);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    this.storeDiscoveredEmail(email);
   },
 
   observeEmailField(field) {
@@ -180,16 +349,16 @@ const YurrrDetector = {
   },
 
   async storeDiscoveredEmail(value) {
+    if (!this.isCredentialPageAllowed()) return;
+
     const email = this.normalizeEmail(value);
     if (!email || !this.isValidEmail(email)) return;
 
     this.autoEmailPersistQueue = this.autoEmailPersistQueue.then(async () => {
-      const result = await chrome.storage.local.get(this.AUTO_EMAIL_SUGGESTIONS_KEY);
-      const current = this.parseEmailSuggestions(result[this.AUTO_EMAIL_SUGGESTIONS_KEY]).map((entry) => this.normalizeEmail(entry));
-      if (current.includes(email)) return;
-
-      const updated = [email, ...current].slice(0, this.MAX_AUTO_EMAIL_SUGGESTIONS);
-      await chrome.storage.local.set({ [this.AUTO_EMAIL_SUGGESTIONS_KEY]: updated });
+      await this.sendRuntimeMessage('STORE_DISCOVERED_EMAIL', {
+        email,
+        pageUrl: window.location.href,
+      });
       this.emailSuggestionsCache = null;
       this.emailSuggestionsCacheAt = 0;
     }).catch(() => {
@@ -197,56 +366,6 @@ const YurrrDetector = {
     });
 
     await this.autoEmailPersistQueue;
-  },
-
-  extractEmailsFromText(text) {
-    if (!text) return [];
-    const matches = String(text).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g);
-    if (!matches) return [];
-    return this.parseEmailSuggestions(matches);
-  },
-
-  async discoverEmailsFromGoogleContext() {
-    const host = window.location.hostname.toLowerCase();
-    if (!/(^|\.)google\.com$|(^|\.)googlemail\.com$|(^|\.)gmail\.com$/.test(host)) {
-      return;
-    }
-
-    // Delay slightly so account chips can render on dynamic Google pages.
-    setTimeout(async () => {
-      const discovered = new Set();
-
-      const attrCandidates = document.querySelectorAll('[data-email], [email], a[href^="mailto:"]');
-      for (const node of attrCandidates) {
-        const raw =
-          node.getAttribute('data-email') ||
-          node.getAttribute('email') ||
-          node.getAttribute('href') ||
-          '';
-        const emails = this.extractEmailsFromText(raw);
-        for (const email of emails) discovered.add(this.normalizeEmail(email));
-      }
-
-      const pageText = (document.body?.innerText || '').slice(0, 120000);
-      const textEmails = this.extractEmailsFromText(pageText);
-      for (const email of textEmails) discovered.add(this.normalizeEmail(email));
-
-      for (const email of discovered) {
-        await this.storeDiscoveredEmail(email);
-      }
-    }, 900);
-  },
-
-  async backfillEmailsFromVault() {
-    try {
-      const response = await this.sendRuntimeMessage('GET_KNOWN_EMAIL_USERNAMES');
-      const emails = this.parseEmailSuggestions(response?.emails);
-      for (const email of emails) {
-        await this.storeDiscoveredEmail(email);
-      }
-    } catch {
-      // vault likely locked
-    }
   },
 
   normalizeUsername(value) {
@@ -270,6 +389,7 @@ const YurrrDetector = {
       await this.sendRuntimeMessage('PENDING_USERNAME', {
         domain,
         url,
+        pageUrl: window.location.href,
         username: normalized,
       });
     } catch {
@@ -279,7 +399,10 @@ const YurrrDetector = {
 
   async getRememberedUsername(domain) {
     try {
-      const response = await this.sendRuntimeMessage('GET_PENDING_USERNAME', { domain });
+      const response = await this.sendRuntimeMessage('GET_PENDING_USERNAME', {
+        domain,
+        pageUrl: window.location.href,
+      });
       return response?.username || '';
     } catch {
       return '';
@@ -319,7 +442,7 @@ const YurrrDetector = {
 
         // Re-evaluate dynamically for multi-step/login forms that mutate fields after initial scan.
         pwField.addEventListener('focus', () => {
-          this.tryAutoFill(resolveUsernameField(), pwField);
+          this.tryAutoFill(resolveUsernameField(), pwField, true, pwField);
         });
       }
 
@@ -367,7 +490,9 @@ const YurrrDetector = {
     }
   },
 
-  async tryAutoFill(usernameField, passwordField) {
+  async tryAutoFill(usernameField, passwordField, openOnReady = false, pickerTarget = null) {
+    if (!this.isCredentialPageAllowed()) return;
+
     const domain = window.location.hostname;
 
     try {
@@ -376,18 +501,20 @@ const YurrrDetector = {
         preferredUsername = await this.getRememberedUsername(domain);
       }
 
-      const response = await this.sendRuntimeMessage('CHECK_CREDENTIALS', { domain, preferredUsername });
+      const response = await this.sendRuntimeMessage('CHECK_CREDENTIALS', {
+        domain,
+        preferredUsername,
+        pageUrl: window.location.href,
+      });
       const creds = response.credentials;
       if (!creds || creds.length === 0) return;
-
-      const selectedCredential = this.selectCredential(creds, preferredUsername) || creds[0];
-
-      // Auto-fill best match
-      this.fillFields(usernameField, passwordField, selectedCredential);
 
       // Attach picker to fields — opens on focus/click
       this.attachPicker(passwordField, usernameField, passwordField, creds, preferredUsername);
       this.attachPicker(usernameField, usernameField, passwordField, creds, preferredUsername);
+      if (openOnReady && pickerTarget) {
+        this.showPicker(pickerTarget, usernameField, passwordField, creds, preferredUsername);
+      }
     } catch {
       // Vault likely locked, do nothing
     }
@@ -532,12 +659,34 @@ const YurrrDetector = {
 
     // Click handlers for items
     shadow.querySelectorAll('.item').forEach((item) => {
-      item.addEventListener('mousedown', (e) => {
+      item.addEventListener('mousedown', async (e) => {
         e.preventDefault(); // Prevent blur on the input field
+        if (item.dataset.loading === '1') return;
+        item.dataset.loading = '1';
+
         const idx = Number.parseInt(item.dataset.index, 10);
         const cred = credentials[idx];
-        this.fillFields(usernameField, passwordField, cred);
-        this.rememberUsername(window.location.hostname, window.location.href, cred.username);
+
+        try {
+          let fillCredential = cred;
+          if (passwordField) {
+            const response = await this.sendRuntimeMessage('GET_CREDENTIAL_FOR_FILL', {
+              id: cred.id,
+              domain: window.location.hostname,
+              pageUrl: window.location.href,
+              userGesture: true,
+            });
+            fillCredential = response?.credential;
+          }
+
+          if (!fillCredential) return;
+          this.fillFields(usernameField, passwordField, fillCredential);
+          this.rememberUsername(window.location.hostname, window.location.href, fillCredential.username);
+        } catch {
+          return;
+        } finally {
+          item.dataset.loading = '0';
+        }
 
         shadow.querySelectorAll('.item').forEach((el) => el.classList.remove('active'));
         item.classList.add('active');
@@ -591,6 +740,8 @@ const YurrrDetector = {
   },
 
   async handleFormSubmit(form, usernameField, passwordField) {
+    if (!this.isCredentialPageAllowed()) return;
+
     const url = window.location.href;
     const domain = window.location.hostname;
     const typedUsername = String(usernameField?.value || '').trim();
@@ -611,15 +762,20 @@ const YurrrDetector = {
 
     chrome.runtime.sendMessage({
       type: 'PENDING_CREDENTIALS',
-      payload: { url, domain, username, password },
+      payload: { url, domain, pageUrl: url, username, password },
     });
   },
 
   async checkPendingCredentials() {
+    if (!this.isCredentialPageAllowed()) return;
+
     const domain = window.location.hostname;
 
     try {
-      const response = await this.sendRuntimeMessage('CHECK_PENDING_CREDENTIALS', { domain });
+      const response = await this.sendRuntimeMessage('CHECK_PENDING_CREDENTIALS', {
+        domain,
+        pageUrl: window.location.href,
+      });
 
       if (response.hasPending) {
         const { url, username, password } = response.credentials;
@@ -651,7 +807,12 @@ const YurrrDetector = {
 
     banner.querySelector('.yurrr-banner-save').addEventListener('click', async () => {
       try {
-        await this.sendRuntimeMessage('FORM_SUBMITTED', { url, username, password });
+        await this.sendRuntimeMessage('FORM_SUBMITTED', {
+          url,
+          pageUrl: window.location.href,
+          username,
+          password,
+        });
       } catch {
         // Silent fail
       }

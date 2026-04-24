@@ -2,14 +2,18 @@ mod auth;
 mod config;
 mod crypto;
 mod db;
+mod domain;
 mod entries;
 mod errors;
 mod favicons;
 mod generate;
+mod health;
 mod models;
 mod router;
 mod session;
 mod tls;
+mod vault_export;
+mod vault_items;
 
 use sqlx::SqlitePool;
 
@@ -30,7 +34,10 @@ async fn main() {
 
     tracing_subscriber::fmt::init();
 
-    tracing::info!("Starting Yurrr Password Manager Server v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "Starting Yurrr Password Manager Server v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Initialize database
     let pool = db::init_pool()
@@ -46,10 +53,7 @@ async fn main() {
     // Ensure TLS certificates exist
     let (cert_pem, key_pem) = tls::ensure_certs();
 
-    let state = AppState {
-        db: pool,
-        sessions,
-    };
+    let state = AppState { db: pool, sessions };
 
     let app = router::build_router(state);
 

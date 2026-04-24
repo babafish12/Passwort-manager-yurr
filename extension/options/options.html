@@ -22,7 +22,7 @@
         </svg>
         Yurrr Password Manager
       </h1>
-      <p>Configure server access, security behavior, email suggestions, and import options.</p>
+      <p>Configure server access, security behavior, email suggestions, and import/export options.</p>
     </header>
 
     <section class="settings-section">
@@ -66,6 +66,39 @@
       </div>
 
       <div id="status" class="status hidden" aria-live="polite"></div>
+    </section>
+
+    <section class="settings-section">
+      <div class="section-title">
+        <h2>
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 3v12" />
+            <path d="m7 10 5 5 5-5" />
+            <path d="M5 21h14" />
+          </svg>
+          Export Vault
+        </h2>
+      </div>
+
+      <div class="field">
+        <label>Vault JSON</label>
+        <small>Downloads a decrypted JSON export. Store it only in a trusted, encrypted location.</small>
+      </div>
+
+      <div class="actions">
+        <button id="export-vault-btn" class="btn btn-secondary" type="button">
+          <span class="btn-content">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3v12" />
+              <path d="m7 10 5 5 5-5" />
+              <path d="M5 21h14" />
+            </svg>
+            <span class="btn-label">Export JSON</span>
+          </span>
+        </button>
+      </div>
+
+      <div id="export-status" class="status hidden" aria-live="polite"></div>
     </section>
 
     <section class="settings-section">

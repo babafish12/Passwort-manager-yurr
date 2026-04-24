@@ -32,6 +32,8 @@ const EntryForm = {
     this.notesInput.value = '';
     this.passwordInput.type = 'password';
     this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
+    this.togglePwBtn.title = 'Show password';
+    this.togglePwBtn.setAttribute('aria-label', 'Show password');
 
     EntryList.hide();
     this.screen.classList.remove('hidden');
@@ -49,6 +51,8 @@ const EntryForm = {
     this.notesInput.value = entry.notes || '';
     this.passwordInput.type = 'password';
     this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
+    this.togglePwBtn.title = 'Show password';
+    this.togglePwBtn.setAttribute('aria-label', 'Show password');
 
     EntryDetail.hide();
     this.screen.classList.remove('hidden');
@@ -70,6 +74,9 @@ const EntryForm = {
     this.togglePwBtn.innerHTML = window.getPopupIcon
       ? window.getPopupIcon(this.passwordInput.type === 'password' ? 'eye' : 'eyeOff', 'icon-sm')
       : '';
+    const isVisible = this.passwordInput.type === 'text';
+    this.togglePwBtn.title = isVisible ? 'Hide password' : 'Show password';
+    this.togglePwBtn.setAttribute('aria-label', isVisible ? 'Hide password' : 'Show password');
   },
 
   async generatePassword() {
@@ -77,6 +84,9 @@ const EntryForm = {
       const result = await sendMessage('GENERATE_PASSWORD', { length: 20 });
       this.passwordInput.value = result.password;
       this.passwordInput.type = 'text';
+      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eyeOff', 'icon-sm') : '';
+      this.togglePwBtn.title = 'Hide password';
+      this.togglePwBtn.setAttribute('aria-label', 'Hide password');
       PasswordGenerator.updateStrength(result.password);
     } catch (err) {
       if (isSessionLostError(err)) return;

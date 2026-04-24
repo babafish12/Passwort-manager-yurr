@@ -12,6 +12,11 @@ use zeroize::Zeroizing;
 
 use crate::config::{ARGON2_M_COST, ARGON2_P_COST, ARGON2_T_COST, DEFAULT_PASSWORD_LENGTH};
 
+const UPPERCASE_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const LOWERCASE_CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+const DIGIT_CHARS: &[u8] = b"0123456789";
+const SYMBOL_CHARS: &[u8] = b"!@#$%^&*()-_=+[]{}|;:,.<>?";
+
 /// Hash the master password for authentication (stored in DB).
 /// Uses Argon2id with a random salt.
 pub fn hash_master_password(password: &str) -> Result<String, argon2::password_hash::Error> {
@@ -86,7 +91,9 @@ pub fn encrypt(plaintext: &str, key: &[u8; 32]) -> Result<String, String> {
 
 /// Decrypt base64(nonce[12] || ciphertext || tag[16]) with AES-256-GCM.
 pub fn decrypt(encoded: &str, key: &[u8; 32]) -> Result<String, String> {
-    let combined = B64.decode(encoded).map_err(|e| format!("base64 decode: {e}"))?;
+    let combined = B64
+        .decode(encoded)
+        .map_err(|e| format!("base64 decode: {e}"))?;
     if combined.len() < 12 + 16 {
         return Err("ciphertext too short".to_string());
     }
@@ -110,37 +117,67 @@ pub fn generate_password(
     digits: bool,
     symbols: bool,
 ) -> String {
-    let length = if length == 0 { DEFAULT_PASSWORD_LENGTH } else { length };
+    let requested_length = if length == 0 {
+        DEFAULT_PASSWORD_LENGTH
+    } else {
+        length
+    };
 
-    let mut charset = String::new();
+    let mut groups: Vec<&[u8]> = Vec::new();
     if uppercase {
-        charset.push_str("ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+        groups.push(UPPERCASE_CHARS);
     }
     if lowercase {
-        charset.push_str("abcdefghijklmnopqrstuvwxyz");
+        groups.push(LOWERCASE_CHARS);
     }
     if digits {
-        charset.push_str("0123456789");
+        groups.push(DIGIT_CHARS);
     }
     if symbols {
-        charset.push_str("!@#$%^&*()-_=+[]{}|;:,.<>?");
+        groups.push(SYMBOL_CHARS);
     }
 
     // Default to all character types if none selected
-    if charset.is_empty() {
-        charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{}|;:,.<>?".to_string();
+    if groups.is_empty() {
+        groups.extend([UPPERCASE_CHARS, LOWERCASE_CHARS, DIGIT_CHARS, SYMBOL_CHARS]);
     }
 
-    let charset_bytes = charset.as_bytes();
-    let mut password = String::with_capacity(length);
+    let length = requested_length.max(groups.len());
+    let charset: Vec<u8> = groups
+        .iter()
+        .flat_map(|group| group.iter().copied())
+        .collect();
+    let mut password = Vec::with_capacity(length);
     let mut rng = OsRng;
 
-    for _ in 0..length {
-        let idx = (rng.next_u32() as usize) % charset_bytes.len();
-        password.push(charset_bytes[idx] as char);
+    for group in &groups {
+        password.push(group[random_index(group.len(), &mut rng)]);
     }
 
-    password
+    while password.len() < length {
+        password.push(charset[random_index(charset.len(), &mut rng)]);
+    }
+
+    for index in (1..password.len()).rev() {
+        let swap_with = random_index(index + 1, &mut rng);
+        password.swap(index, swap_with);
+    }
+
+    password.into_iter().map(char::from).collect()
+}
+
+fn random_index(len: usize, rng: &mut OsRng) -> usize {
+    debug_assert!(len > 0);
+
+    let len = len as u64;
+    let zone = (u64::MAX / len) * len;
+
+    loop {
+        let value = rng.next_u64();
+        if value < zone {
+            return (value % len) as usize;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -204,5 +241,24 @@ mod tests {
     fn test_password_generator_default_when_empty() {
         let pw = generate_password(0, false, false, false, false);
         assert_eq!(pw.len(), DEFAULT_PASSWORD_LENGTH);
+    }
+
+    #[test]
+    fn test_password_generator_includes_selected_groups() {
+        let pw = generate_password(32, true, true, true, true);
+        assert!(pw.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(pw.chars().any(|c| c.is_ascii_lowercase()));
+        assert!(pw.chars().any(|c| c.is_ascii_digit()));
+        assert!(pw.chars().any(|c| SYMBOL_CHARS.contains(&(c as u8))));
+    }
+
+    #[test]
+    fn test_password_generator_expands_too_short_lengths_to_fit_groups() {
+        let pw = generate_password(2, true, true, true, true);
+        assert_eq!(pw.len(), 4);
+        assert!(pw.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(pw.chars().any(|c| c.is_ascii_lowercase()));
+        assert!(pw.chars().any(|c| c.is_ascii_digit()));
+        assert!(pw.chars().any(|c| SYMBOL_CHARS.contains(&(c as u8))));
     }
 }

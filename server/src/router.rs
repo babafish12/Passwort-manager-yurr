@@ -1,19 +1,41 @@
+use axum::http::{header, Method};
 use axum::routing::{delete, get, post, put};
 use axum::Router;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, AllowPrivateNetwork, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::auth;
+use crate::config;
 use crate::entries;
 use crate::favicons;
 use crate::generate;
+use crate::health;
+use crate::vault_export;
+use crate::vault_items;
 use crate::AppState;
 
 pub fn build_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+        .allow_origin(AllowOrigin::predicate(|origin, _| {
+            origin
+                .to_str()
+                .map(config::is_cors_origin_allowed)
+                .unwrap_or(false)
+        }))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_private_network(AllowPrivateNetwork::predicate(|origin, _| {
+            origin
+                .to_str()
+                .map(config::is_cors_origin_allowed)
+                .unwrap_or(false)
+        }));
 
     let api = Router::new()
         // Auth routes
@@ -29,12 +51,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/entries/{id}", get(entries::get_entry))
         .route("/entries/{id}", put(entries::update_entry))
         .route("/entries/{id}", delete(entries::delete_entry))
+        // Vault item routes
+        .route("/vault-items", get(vault_items::list_vault_items))
+        .route("/vault-items", post(vault_items::create_vault_item))
+        .route("/vault-items/{id}", get(vault_items::get_vault_item))
+        .route("/vault-items/{id}", put(vault_items::update_vault_item))
+        .route("/vault-items/{id}", delete(vault_items::delete_vault_item))
+        // Vault export/import routes
+        .route("/vault/export", get(vault_export::export_vault))
+        .route("/vault/import", post(vault_export::import_vault))
         // Favicon route
         .route("/favicons/{domain}", get(favicons::get_favicon_handler))
         // Generate route
         .route("/generate", post(generate::generate_password));
 
     Router::new()
+        .route("/healthz", get(health::healthz))
+        .route("/readyz", get(health::readyz))
         .nest("/api/v1", api)
         .layer(cors)
         .layer(TraceLayer::new_for_http())

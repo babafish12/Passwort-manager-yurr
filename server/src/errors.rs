@@ -34,9 +34,15 @@ impl IntoResponse for AppError {
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Internal(msg) => {
                 tracing::error!("Internal error: {msg}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
             }
-            AppError::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "Too many requests".to_string()),
+            AppError::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many requests".to_string(),
+            ),
         };
 
         let body = axum::Json(json!({ "error": message }));

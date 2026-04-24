@@ -8,6 +8,8 @@ const serverUrlInput = document.getElementById('server-url');
 const testBtn = document.getElementById('test-btn');
 const saveBtn = document.getElementById('save-btn');
 const statusEl = document.getElementById('status');
+const exportVaultBtn = document.getElementById('export-vault-btn');
+const exportStatusEl = document.getElementById('export-status');
 
 const TOAST_ICONS = {
   success: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" /></svg>',
@@ -236,6 +238,41 @@ async function sendBackgroundMessage(type, payload = {}) {
     });
   });
 }
+
+function showExportStatus(message, type) {
+  exportStatusEl.textContent = message;
+  exportStatusEl.className = `status ${type}`;
+  showToast(message, type === 'error' ? 'error' : 'success');
+}
+
+function downloadJson(filename, data) {
+  const json = JSON.stringify(data ?? null, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+exportVaultBtn.addEventListener('click', async () => {
+  setButtonLoading(exportVaultBtn, true, 'Exporting...');
+
+  try {
+    const exportData = await sendBackgroundMessage('EXPORT_VAULT');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    downloadJson(`yurrr-vault-export-${timestamp}.json`, exportData);
+    showExportStatus('Vault export downloaded.', 'success');
+  } catch (err) {
+    showExportStatus(`Export failed: ${err.message}`, 'error');
+  } finally {
+    setButtonLoading(exportVaultBtn, false);
+    hideStatusLater(exportStatusEl, 3000);
+  }
+});
 
 function showEmailStatus(message, type) {
   emailStatusEl.textContent = message;

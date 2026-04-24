@@ -3,10 +3,13 @@ import {
   AUTO_LOCK_MINUTES,
   STORAGE_KEY_SESSION_MODE,
   STORAGE_KEY_LAST_ACTIVE,
+  STORAGE_KEY_AUTO_LOCK_EXPIRES_AT,
   STORAGE_KEY_AUTO_LOCK_MINUTES,
   SESSION_MODE_PERSISTENT,
   SESSION_MODE_INACTIVITY,
 } from '../lib/constants.js';
+
+const AUTO_LOCK_ALARM = 'auto-lock';
 
 export class SessionManager {
   constructor(api) {
@@ -46,7 +49,11 @@ export class SessionManager {
     }
     this.api.setToken(token);
     this.updateBadge(true);
-    await this.resetAutoLock();
+    if (mode === SESSION_MODE_INACTIVITY) {
+      await this.resetAutoLock();
+    } else {
+      await this.clearAutoLockState();
+    }
   }
 
   async loadToken() {
@@ -60,17 +67,14 @@ export class SessionManager {
     if (!token) {
       result = await chrome.storage.local.get(STORAGE_KEY_TOKEN);
       token = result[STORAGE_KEY_TOKEN] || null;
+    }
 
-      // In persistent/inactivity mode, check if we timed out while browser was closed
-      if (token && (mode === SESSION_MODE_PERSISTENT || mode === SESSION_MODE_INACTIVITY)) {
-        const autoLockMinutes = await this._getAutoLockMinutes();
-        const lastActiveResult = await chrome.storage.local.get(STORAGE_KEY_LAST_ACTIVE);
-        const lastActive = lastActiveResult[STORAGE_KEY_LAST_ACTIVE];
-        if (lastActive && Date.now() - lastActive > autoLockMinutes * 60 * 1000) {
-          await this.lock();
-          return null;
-        }
+    if (token && mode === SESSION_MODE_INACTIVITY) {
+      if (await this._lockIfAutoLockExpired()) {
+        return null;
       }
+    } else {
+      await this.clearAutoLockState();
     }
 
     if (token) {
@@ -83,7 +87,7 @@ export class SessionManager {
   async clearToken() {
     await chrome.storage.session.remove(STORAGE_KEY_TOKEN);
     await chrome.storage.local.remove(STORAGE_KEY_TOKEN);
-    await chrome.storage.local.remove(STORAGE_KEY_LAST_ACTIVE);
+    await this.clearAutoLockState();
     this.api.clearToken();
     this.credentialCache.clear();
     this.updateBadge(false);
@@ -94,11 +98,76 @@ export class SessionManager {
     return !!token;
   }
 
-  async resetAutoLock() {
+  async clearAutoLockState() {
+    await chrome.storage.local.remove([
+      STORAGE_KEY_LAST_ACTIVE,
+      STORAGE_KEY_AUTO_LOCK_EXPIRES_AT,
+    ]);
+    await chrome.alarms.clear(AUTO_LOCK_ALARM);
+  }
+
+  async _getAutoLockDeadline() {
+    const result = await chrome.storage.local.get([
+      STORAGE_KEY_AUTO_LOCK_EXPIRES_AT,
+      STORAGE_KEY_LAST_ACTIVE,
+    ]);
+
+    const expiresAt = result[STORAGE_KEY_AUTO_LOCK_EXPIRES_AT];
+    if (typeof expiresAt === 'number') {
+      return expiresAt;
+    }
+
+    const lastActive = result[STORAGE_KEY_LAST_ACTIVE];
+    if (typeof lastActive !== 'number') {
+      return null;
+    }
+
     const autoLockMinutes = await this._getAutoLockMinutes();
-    chrome.alarms.clear('auto-lock');
-    chrome.alarms.create('auto-lock', { delayInMinutes: autoLockMinutes });
-    await chrome.storage.local.set({ [STORAGE_KEY_LAST_ACTIVE]: Date.now() });
+    return lastActive + autoLockMinutes * 60 * 1000;
+  }
+
+  async _scheduleAutoLock(deadline) {
+    await chrome.alarms.clear(AUTO_LOCK_ALARM);
+    if (deadline <= Date.now()) {
+      await this.lock();
+      return false;
+    }
+
+    chrome.alarms.create(AUTO_LOCK_ALARM, { when: deadline });
+    return true;
+  }
+
+  async _lockIfAutoLockExpired() {
+    const deadline = await this._getAutoLockDeadline();
+    if (!deadline) {
+      return false;
+    }
+
+    if (deadline <= Date.now()) {
+      await this.lock();
+      return true;
+    }
+
+    await this._scheduleAutoLock(deadline);
+    return false;
+  }
+
+  async resetAutoLock() {
+    const mode = await this._getMode();
+    if (mode !== SESSION_MODE_INACTIVITY) {
+      await this.clearAutoLockState();
+      return;
+    }
+
+    const autoLockMinutes = await this._getAutoLockMinutes();
+    const now = Date.now();
+    const deadline = now + autoLockMinutes * 60 * 1000;
+
+    await chrome.storage.local.set({
+      [STORAGE_KEY_LAST_ACTIVE]: now,
+      [STORAGE_KEY_AUTO_LOCK_EXPIRES_AT]: deadline,
+    });
+    await this._scheduleAutoLock(deadline);
   }
 
   async lock() {
@@ -108,34 +177,63 @@ export class SessionManager {
       // Server might be unreachable, clear local state anyway
     }
     await this.clearToken();
-    chrome.alarms.clear('auto-lock');
   }
 
   async forceLocalLock() {
     await this.clearToken();
-    chrome.alarms.clear('auto-lock');
   }
 
   setupIdleDetection() {
     try {
       chrome.idle.setDetectionInterval(60); // 1 minute
-      chrome.idle.onStateChanged.addListener((newState) => {
+      chrome.idle.onStateChanged.addListener(async (newState) => {
         // Only lock immediately on laptop lock if mode is 'persistent'
-        if (this._cachedMode === SESSION_MODE_PERSISTENT && newState === 'locked') {
-          this.lock();
+        const mode = await this._getMode();
+        if (mode === SESSION_MODE_PERSISTENT && newState === 'locked') {
+          await this.lock();
         }
       });
     } catch {
       // idle API may not be available
     }
 
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName === 'local' && changes[STORAGE_KEY_SESSION_MODE]) {
+    chrome.storage.onChanged.addListener(async (changes, areaName) => {
+      if (areaName !== 'local') {
+        return;
+      }
+
+      if (changes[STORAGE_KEY_SESSION_MODE]) {
         const newMode = changes[STORAGE_KEY_SESSION_MODE].newValue || 'ephemeral';
         this._cachedMode = newMode;
         // Clear token on mode change — user must re-login
-        this.clearToken();
+        await this.clearToken();
+        return;
       }
+
+      if (!changes[STORAGE_KEY_AUTO_LOCK_MINUTES]) {
+        return;
+      }
+
+      const mode = await this._getMode();
+      if (mode !== SESSION_MODE_INACTIVITY) {
+        return;
+      }
+
+      const tokenResult = await chrome.storage.local.get(STORAGE_KEY_TOKEN);
+      if (!tokenResult[STORAGE_KEY_TOKEN]) {
+        return;
+      }
+
+      const lastActiveResult = await chrome.storage.local.get(STORAGE_KEY_LAST_ACTIVE);
+      const lastActive = lastActiveResult[STORAGE_KEY_LAST_ACTIVE];
+      const baseTime = typeof lastActive === 'number' ? lastActive : Date.now();
+      const minutes = changes[STORAGE_KEY_AUTO_LOCK_MINUTES].newValue || AUTO_LOCK_MINUTES;
+      const deadline = baseTime + minutes * 60 * 1000;
+
+      await chrome.storage.local.set({
+        [STORAGE_KEY_AUTO_LOCK_EXPIRES_AT]: deadline,
+      });
+      await this._scheduleAutoLock(deadline);
     });
   }
 

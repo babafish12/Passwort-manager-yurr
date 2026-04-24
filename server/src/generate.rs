@@ -15,7 +15,7 @@ pub async fn generate_password(
     let digits = req.digits.unwrap_or(true);
     let symbols = req.symbols.unwrap_or(true);
 
-    if length < 4 || length > 128 {
+    if !(4..=128).contains(&length) {
         return Err(AppError::BadRequest(
             "Password length must be between 4 and 128".into(),
         ));

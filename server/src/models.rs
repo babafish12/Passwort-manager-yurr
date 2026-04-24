@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 // --- Database row types ---
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct MasterConfigRow {
-    pub id: i64,
     pub password_hash: String,
     pub encryption_salt: String,
-    pub argon2_m_cost: i64,
-    pub argon2_t_cost: i64,
-    pub argon2_p_cost: i64,
-    pub created_at: String,
-    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -23,6 +18,15 @@ pub struct EntryRow {
     pub password_encrypted: String,
     pub notes_encrypted: Option<String>,
     pub favorite: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct VaultItemRow {
+    pub id: String,
+    pub item_type: String,
+    pub payload_encrypted: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -70,14 +74,23 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateVaultItemRequest {
+    pub item_type: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateVaultItemRequest {
+    pub payload: Value,
+}
+
 // --- Database row types (favicons) ---
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct FaviconRow {
-    pub domain: String,
     pub image_data: Vec<u8>,
     pub mime_type: String,
-    pub fetched_at: String,
 }
 
 // --- Response types ---
@@ -126,6 +139,46 @@ pub struct GeneratePasswordResponse {
 #[derive(Debug, Serialize)]
 pub struct MessageResponse {
     pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VaultItemDetail {
+    pub id: String,
+    pub item_type: String,
+    pub payload: Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VaultExportPassword {
+    pub id: String,
+    pub website_url: String,
+    pub website_domain: String,
+    pub username: String,
+    pub password: String,
+    pub notes: Option<String>,
+    pub favorite: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VaultExportDocument {
+    pub version: u32,
+    pub exported_at: String,
+    pub passwords: Vec<VaultExportPassword>,
+    pub vault_items: Vec<VaultItemDetail>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VaultImportResponse {
+    pub imported_passwords: usize,
+    pub imported_vault_items: usize,
+    pub skipped_passwords: usize,
+    pub skipped_vault_items: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
 }
 
 impl From<&EntryRow> for EntryListItem {

@@ -222,10 +222,84 @@ function showToast(message, variant = 'success') {
   }, 2500);
 }
 
+function truncateText(value, maxLength = 42) {
+  const text = String(value || '');
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function showConfirmDialog({
+  title = 'Confirm',
+  message = '',
+  confirmText = 'Confirm',
+  cancelText = 'Cancel',
+  destructive = false,
+  confirmIcon = 'check',
+} = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'confirm-overlay';
+    overlay.setAttribute('tabindex', '-1');
+    overlay.innerHTML = `
+      <div class="confirm-modal">
+        <div class="confirm-title">${escapeHtml(title)}</div>
+        <p class="confirm-message">${escapeHtml(message)}</p>
+        <div class="confirm-actions">
+          <button type="button" class="btn btn-secondary confirm-cancel">
+            <span class="btn-content">${getPopupIcon('x', 'icon-sm')}<span class="btn-label">${escapeHtml(cancelText)}</span>
+            </span>
+          </button>
+          <button type="button" class="btn ${destructive ? 'btn-danger' : 'btn-primary'} confirm-action">
+            <span class="btn-content">${getPopupIcon(confirmIcon, 'icon-sm')}<span class="btn-label">${escapeHtml(confirmText)}</span>
+            </span>
+          </button>
+        </div>
+      </div>
+    `;
+
+    const close = (value) => {
+      overlay.removeEventListener('keydown', onKeydown);
+      overlay.remove();
+      resolve(value);
+    };
+
+    const onKeydown = (event) => {
+      if (event.key === 'Escape') {
+        close(false);
+      }
+    };
+
+    const cancel = () => close(false);
+    const confirm = () => close(true);
+
+    overlay.querySelector('.confirm-cancel').addEventListener('click', cancel);
+    overlay.querySelector('.confirm-action').addEventListener('click', confirm);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) cancel();
+    });
+
+    overlay.addEventListener('keydown', onKeydown);
+    document.body.appendChild(overlay);
+    const cancelBtn = overlay.querySelector('.confirm-cancel');
+    if (cancelBtn) {
+      cancelBtn.focus();
+    } else {
+      overlay.focus();
+    }
+  });
+}
+
+window.showConfirmDialog = showConfirmDialog;
+window.truncateText = truncateText;
+
 const VaultSections = {
   activeTab: 'passwords',
-  STORAGE_KEY_CARDS: 'yurrr_cards',
-  STORAGE_KEY_ADDRESSES: 'yurrr_addresses',
+  LOCAL_STORAGE_KEYS: {
+    card: 'yurrr_cards',
+    address: 'yurrr_addresses',
+  },
+  migrationComplete: {},
+  migrationPromises: {},
 
   init() {
     this.listScreen = document.getElementById('list-screen');
@@ -303,24 +377,179 @@ const VaultSections = {
 
   handleSearchInput() {
     if (this.activeTab === 'passwords') return false;
-    this.renderCurrentTab();
+    this.renderCurrentTab().catch((err) => {
+      showToast(`Error: ${err.message}`, 'error');
+    });
     return true;
   },
 
-  createId() {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return crypto.randomUUID();
+  normalizePayloadObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  },
+
+  stripEntityMetadata(value) {
+    const source = this.normalizePayloadObject(value);
+    const { id, item_type, created_at, updated_at, ...payload } = source;
+    return payload;
+  },
+
+  toCardPayload(value) {
+    const base = this.stripEntityMetadata(value);
+    const number = this.normalizeCardNumber(base.number);
+    const last4 = number ? number.slice(-4) : this.normalizeCardNumber(base.last4).slice(-4);
+    const expMonth = Number.parseInt(base.exp_month, 10);
+    const expYear = Number.parseInt(base.exp_year, 10);
+
+    return {
+      ...base,
+      label: String(base.label || '').trim(),
+      cardholder_name: String(base.cardholder_name || '').trim(),
+      number,
+      last4,
+      brand: String(base.brand || (number ? this.detectCardBrand(number) : 'unknown')).trim() || 'unknown',
+      exp_month: Number.isFinite(expMonth) ? expMonth : base.exp_month || '',
+      exp_year: Number.isFinite(expYear) ? expYear : base.exp_year || '',
+    };
+  },
+
+  toAddressPayload(value) {
+    const base = this.stripEntityMetadata(value);
+    return {
+      ...base,
+      label: String(base.label || '').trim(),
+      full_name: String(base.full_name || '').trim(),
+      line1: String(base.line1 || '').trim(),
+      line2: String(base.line2 || '').trim(),
+      city: String(base.city || '').trim(),
+      postal_code: String(base.postal_code || '').trim(),
+      country: String(base.country || '').trim(),
+    };
+  },
+
+  toVaultPayload(itemType, value) {
+    return itemType === 'card' ? this.toCardPayload(value) : this.toAddressPayload(value);
+  },
+
+  mapVaultItem(item, itemType) {
+    const payload = this.toVaultPayload(itemType, item?.payload);
+    return {
+      ...payload,
+      id: item?.id,
+      item_type: item?.item_type || itemType,
+      created_at: item?.created_at,
+      updated_at: item?.updated_at,
+    };
+  },
+
+  stableStringify(value) {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => this.stableStringify(item)).join(',')}]`;
     }
-    return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    if (value && typeof value === 'object') {
+      return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${this.stableStringify(value[key])}`)
+        .join(',')}}`;
+    }
+
+    return JSON.stringify(value);
   },
 
-  async storageGet(key) {
-    const result = await chrome.storage.local.get(key);
-    return Array.isArray(result[key]) ? result[key] : [];
+  payloadSignature(itemType, payload) {
+    return this.stableStringify(this.toVaultPayload(itemType, payload));
   },
 
-  async storageSet(key, value) {
-    await chrome.storage.local.set({ [key]: value });
+  async fetchVaultItems(itemType) {
+    const response = await sendMessage('LIST_VAULT_ITEMS', { itemType });
+    if (Array.isArray(response)) return response;
+    if (Array.isArray(response?.items)) return response.items;
+    return [];
+  },
+
+  async migrateLocalItems(itemType) {
+    if (this.migrationComplete[itemType]) return;
+    if (this.migrationPromises[itemType]) {
+      await this.migrationPromises[itemType];
+      return;
+    }
+
+    this.migrationPromises[itemType] = (async () => {
+      const storageKey = this.LOCAL_STORAGE_KEYS[itemType];
+      if (!storageKey) return;
+
+      const result = await chrome.storage.local.get(storageKey);
+      const localItems = Array.isArray(result[storageKey]) ? result[storageKey] : [];
+      if (!localItems.length) {
+        this.migrationComplete[itemType] = true;
+        return;
+      }
+
+      const existingItems = await this.fetchVaultItems(itemType);
+      const existingSignatures = new Set(
+        existingItems.map((item) => this.payloadSignature(itemType, item?.payload))
+      );
+
+      let migratedCount = 0;
+      for (const localItem of localItems) {
+        const payload = this.toVaultPayload(itemType, localItem);
+        const signature = this.payloadSignature(itemType, payload);
+        if (existingSignatures.has(signature)) continue;
+
+        await sendMessage('CREATE_VAULT_ITEM', { itemType, payload });
+        existingSignatures.add(signature);
+        migratedCount += 1;
+      }
+
+      await chrome.storage.local.remove(storageKey);
+      this.migrationComplete[itemType] = true;
+
+      if (migratedCount > 0) {
+        const label = itemType === 'card'
+          ? (migratedCount === 1 ? 'card' : 'cards')
+          : (migratedCount === 1 ? 'address' : 'addresses');
+        showToast(`Migrated ${migratedCount} ${label} to vault`);
+      }
+    })();
+
+    try {
+      await this.migrationPromises[itemType];
+    } finally {
+      delete this.migrationPromises[itemType];
+    }
+  },
+
+  async listVaultEntities(itemType) {
+    try {
+      await this.migrateLocalItems(itemType);
+    } catch (err) {
+      showToast(`Local migration failed: ${err.message}`, 'error');
+    }
+
+    const items = await this.fetchVaultItems(itemType);
+    return items.map((item) => this.mapVaultItem(item, itemType));
+  },
+
+  async getVaultEntity(itemType, id) {
+    const items = await this.listVaultEntities(itemType);
+    return items.find((item) => String(item.id) === String(id)) || null;
+  },
+
+  async createVaultEntity(itemType, payload) {
+    return await sendMessage('CREATE_VAULT_ITEM', { itemType, payload });
+  },
+
+  async updateVaultEntity(id, payload) {
+    return await sendMessage('UPDATE_VAULT_ITEM', { id, payload });
+  },
+
+  async deleteVaultEntity(id) {
+    return await sendMessage('DELETE_VAULT_ITEM', { id });
+  },
+
+  renderLoadError(label, err) {
+    this.listEl.innerHTML = `<div class="empty-state">Could not load ${escapeHtml(label)}</div>`;
+    showToast(`Error: ${err.message}`, 'error');
   },
 
   normalizeCardNumber(value) {
@@ -407,7 +636,14 @@ const VaultSections = {
   },
 
   async renderCards() {
-    const cards = await this.storageGet(this.STORAGE_KEY_CARDS);
+    let cards;
+    try {
+      cards = await this.listVaultEntities('card');
+    } catch (err) {
+      this.renderLoadError('cards', err);
+      return;
+    }
+
     const query = this.searchInput.value.trim().toLowerCase();
     const filtered = !query
       ? cards
@@ -427,7 +663,7 @@ const VaultSections = {
       <div class="entry-item" data-card-id="${escapeHtml(card.id)}">
         <div class="entry-icon">${getPopupIcon('creditCard', 'icon-sm')}</div>
         <div class="entry-info">
-          <div class="entry-domain">${escapeHtml(this.formatBrand(card.brand))} ${escapeHtml(this.formatCardNumberMasked(card.number || ''))}</div>
+          <div class="entry-domain">${escapeHtml(this.formatBrand(card.brand))} ${escapeHtml(this.formatCardNumberMasked(card.number || card.last4 || ''))}</div>
           <div class="entry-username">${escapeHtml(card.cardholder_name || 'No cardholder')} • exp ${escapeHtml(String(card.exp_month).padStart(2, '0'))}/${escapeHtml(String(card.exp_year || ''))}</div>
         </div>
         <button class="mini-icon-btn danger" data-card-delete="${escapeHtml(card.id)}" title="Delete" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
@@ -441,20 +677,35 @@ const VaultSections = {
       el.addEventListener('click', async (event) => {
         const deleteBtn = event.target.closest('[data-card-delete]');
         if (deleteBtn) return;
-        await this.editCard(el.dataset.cardId);
+        try {
+          await this.editCard(el.dataset.cardId);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
       });
     });
 
     this.listEl.querySelectorAll('[data-card-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         event.stopPropagation();
-        await this.deleteCard(btn.dataset.cardDelete);
+        try {
+          await this.deleteCard(btn.dataset.cardDelete);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
       });
     });
   },
 
   async renderAddresses() {
-    const addresses = await this.storageGet(this.STORAGE_KEY_ADDRESSES);
+    let addresses;
+    try {
+      addresses = await this.listVaultEntities('address');
+    } catch (err) {
+      this.renderLoadError('addresses', err);
+      return;
+    }
+
     const query = this.searchInput.value.trim().toLowerCase();
     const filtered = !query
       ? addresses
@@ -488,14 +739,22 @@ const VaultSections = {
       el.addEventListener('click', async (event) => {
         const deleteBtn = event.target.closest('[data-address-delete]');
         if (deleteBtn) return;
-        await this.editAddress(el.dataset.addressId);
+        try {
+          await this.editAddress(el.dataset.addressId);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
       });
     });
 
     this.listEl.querySelectorAll('[data-address-delete]').forEach((btn) => {
       btn.addEventListener('click', async (event) => {
         event.stopPropagation();
-        await this.deleteAddress(btn.dataset.addressDelete);
+        try {
+          await this.deleteAddress(btn.dataset.addressDelete);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
       });
     });
   },
@@ -523,9 +782,7 @@ const VaultSections = {
     }
 
     const brand = this.detectCardBrand(number);
-    const cards = await this.storageGet(this.STORAGE_KEY_CARDS);
-    cards.unshift({
-      id: this.createId(),
+    const payload = this.toCardPayload({
       label: String(formData.label || '').trim(),
       cardholder_name: String(formData.cardholder_name || '').trim(),
       number,
@@ -533,18 +790,15 @@ const VaultSections = {
       brand,
       exp_month: Number.parseInt(formData.exp_month, 10),
       exp_year: Number.parseInt(formData.exp_year, 10),
-      created_at: Date.now(),
-      updated_at: Date.now(),
     });
 
-    await this.storageSet(this.STORAGE_KEY_CARDS, cards);
+    await this.createVaultEntity('card', payload);
     await this.renderCards();
     showToast('Card saved');
   },
 
   async editCard(cardId) {
-    const cards = await this.storageGet(this.STORAGE_KEY_CARDS);
-    const existing = cards.find((item) => item.id === cardId);
+    const existing = await this.getVaultEntity('card', cardId);
     if (!existing) return;
 
     const formData = await this.showEntityForm({
@@ -569,9 +823,8 @@ const VaultSections = {
     }
 
     const brand = this.detectCardBrand(number);
-    const idx = cards.findIndex((item) => item.id === cardId);
-    cards[idx] = {
-      ...cards[idx],
+    const payload = this.toCardPayload({
+      ...existing,
       label: String(formData.label || '').trim(),
       cardholder_name: String(formData.cardholder_name || '').trim(),
       number,
@@ -579,21 +832,32 @@ const VaultSections = {
       brand,
       exp_month: Number.parseInt(formData.exp_month, 10),
       exp_year: Number.parseInt(formData.exp_year, 10),
-      updated_at: Date.now(),
-    };
+    });
 
-    await this.storageSet(this.STORAGE_KEY_CARDS, cards);
+    await this.updateVaultEntity(cardId, payload);
     await this.renderCards();
     showToast('Card updated');
   },
 
   async deleteCard(cardId) {
-    if (!confirm('Delete this card?')) return;
-    const cards = await this.storageGet(this.STORAGE_KEY_CARDS);
-    const updated = cards.filter((item) => item.id !== cardId);
-    await this.storageSet(this.STORAGE_KEY_CARDS, updated);
+    const existing = await this.getVaultEntity('card', cardId);
+    if (!existing) return;
+
+    const cardLabel = existing.label || this.formatBrand(existing.brand) || 'Card';
+    const shouldDelete = await showConfirmDialog({
+      title: 'Delete Card',
+      message: `Delete "${truncateText(cardLabel)}" and its payment details? This cannot be undone.`,
+      confirmText: 'Delete Card',
+      cancelText: 'Cancel',
+      confirmIcon: 'trash',
+      destructive: true,
+    });
+
+    if (!shouldDelete) return;
+
+    await this.deleteVaultEntity(cardId);
     await this.renderCards();
-    showToast('Card deleted');
+    showToast(`Deleted ${truncateText(cardLabel)}`);
   },
 
   async addAddress() {
@@ -613,9 +877,7 @@ const VaultSections = {
 
     if (!formData) return;
 
-    const addresses = await this.storageGet(this.STORAGE_KEY_ADDRESSES);
-    addresses.unshift({
-      id: this.createId(),
+    const payload = this.toAddressPayload({
       label: String(formData.label || '').trim(),
       full_name: String(formData.full_name || '').trim(),
       line1: String(formData.line1 || '').trim(),
@@ -623,18 +885,15 @@ const VaultSections = {
       city: String(formData.city || '').trim(),
       postal_code: String(formData.postal_code || '').trim(),
       country: String(formData.country || '').trim(),
-      created_at: Date.now(),
-      updated_at: Date.now(),
     });
 
-    await this.storageSet(this.STORAGE_KEY_ADDRESSES, addresses);
+    await this.createVaultEntity('address', payload);
     await this.renderAddresses();
     showToast('Address saved');
   },
 
   async editAddress(addressId) {
-    const addresses = await this.storageGet(this.STORAGE_KEY_ADDRESSES);
-    const existing = addresses.find((item) => item.id === addressId);
+    const existing = await this.getVaultEntity('address', addressId);
     if (!existing) return;
 
     const formData = await this.showEntityForm({
@@ -653,9 +912,8 @@ const VaultSections = {
 
     if (!formData) return;
 
-    const idx = addresses.findIndex((item) => item.id === addressId);
-    addresses[idx] = {
-      ...addresses[idx],
+    const payload = this.toAddressPayload({
+      ...existing,
       label: String(formData.label || '').trim(),
       full_name: String(formData.full_name || '').trim(),
       line1: String(formData.line1 || '').trim(),
@@ -663,21 +921,32 @@ const VaultSections = {
       city: String(formData.city || '').trim(),
       postal_code: String(formData.postal_code || '').trim(),
       country: String(formData.country || '').trim(),
-      updated_at: Date.now(),
-    };
+    });
 
-    await this.storageSet(this.STORAGE_KEY_ADDRESSES, addresses);
+    await this.updateVaultEntity(addressId, payload);
     await this.renderAddresses();
     showToast('Address updated');
   },
 
   async deleteAddress(addressId) {
-    if (!confirm('Delete this address?')) return;
-    const addresses = await this.storageGet(this.STORAGE_KEY_ADDRESSES);
-    const updated = addresses.filter((item) => item.id !== addressId);
-    await this.storageSet(this.STORAGE_KEY_ADDRESSES, updated);
+    const existing = await this.getVaultEntity('address', addressId);
+    if (!existing) return;
+
+    const addressLabel = existing.label || existing.full_name || 'Address';
+    const shouldDelete = await showConfirmDialog({
+      title: 'Delete Address',
+      message: `Delete "${truncateText(addressLabel)}"? This action cannot be undone.`,
+      confirmText: 'Delete Address',
+      cancelText: 'Cancel',
+      confirmIcon: 'trash',
+      destructive: true,
+    });
+
+    if (!shouldDelete) return;
+
+    await this.deleteVaultEntity(addressId);
     await this.renderAddresses();
-    showToast('Address deleted');
+    showToast(`Deleted ${truncateText(addressLabel)}`);
   },
 
   async showEntityForm({ title, fields, submitLabel = 'Save', helper = '' }) {

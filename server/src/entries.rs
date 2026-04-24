@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 use crate::crypto;
+use crate::domain;
 use crate::errors::AppError;
 use crate::favicons;
 use crate::models::*;
@@ -17,10 +18,7 @@ pub struct ListQuery {
 }
 
 fn extract_domain(url_str: &str) -> String {
-    url::Url::parse(url_str)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_string()))
-        .unwrap_or_else(|| url_str.to_string())
+    domain::normalize_domain_lossy(url_str)
 }
 
 pub async fn list_entries(
@@ -28,7 +26,8 @@ pub async fn list_entries(
     _session: AuthenticatedSession,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<EntryListItem>>, AppError> {
-    let entries: Vec<EntryRow> = if let Some(domain) = &query.domain {
+    let query_domain = query.domain.as_deref().map(extract_domain);
+    let entries: Vec<EntryRow> = if let Some(domain) = &query_domain {
         sqlx::query_as(
             "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries WHERE website_domain = ? ORDER BY website_domain, username",
         )
@@ -43,17 +42,19 @@ pub async fn list_entries(
         .await?
     };
 
-    let favicon_domains: Vec<(String,)> =
-        sqlx::query_as("SELECT domain FROM favicons")
-            .fetch_all(&state.db)
-            .await?;
-    let favicon_set: HashSet<String> = favicon_domains.into_iter().map(|r| r.0).collect();
+    let favicon_domains: Vec<(String,)> = sqlx::query_as("SELECT domain FROM favicons")
+        .fetch_all(&state.db)
+        .await?;
+    let favicon_set: HashSet<String> = favicon_domains
+        .into_iter()
+        .map(|row| extract_domain(&row.0))
+        .collect();
 
     let items: Vec<EntryListItem> = entries
         .iter()
         .map(|row| {
             let mut item = EntryListItem::from(row);
-            item.has_favicon = favicon_set.contains(&row.website_domain);
+            item.has_favicon = favicon_set.contains(&extract_domain(&row.website_domain));
             item
         })
         .collect();
@@ -283,22 +284,25 @@ pub async fn bulk_import(
     .fetch_all(&state.db)
     .await?;
 
-    let existing_set: HashSet<(String, String)> = existing
+    let mut seen_set: HashSet<(String, String)> = existing
         .iter()
-        .map(|e| (e.website_domain.clone(), e.username.clone()))
+        .map(|e| (extract_domain(&e.website_domain), e.username.clone()))
         .collect();
+    let mut favicon_domains = HashSet::new();
 
     for entry_req in &req.entries {
         let domain = extract_domain(&entry_req.website_url);
+        let dedupe_key = (domain.clone(), entry_req.username.clone());
 
-        if req.skip_duplicates && existing_set.contains(&(domain.clone(), entry_req.username.clone())) {
+        if req.skip_duplicates && seen_set.contains(&dedupe_key) {
             skipped += 1;
             continue;
         }
 
         let id = uuid::Uuid::new_v4().to_string();
 
-        let password_encrypted = match crypto::encrypt(&entry_req.password, &session.encryption_key) {
+        let password_encrypted = match crypto::encrypt(&entry_req.password, &session.encryption_key)
+        {
             Ok(enc) => enc,
             Err(e) => {
                 failed += 1;
@@ -331,11 +335,15 @@ pub async fn bulk_import(
         {
             Ok(_) => {
                 imported += 1;
-                let pool = state.db.clone();
-                let d = domain.clone();
-                tokio::spawn(async move {
-                    favicons::ensure_favicon(&pool, &d).await;
-                });
+                seen_set.insert(dedupe_key);
+
+                if favicon_domains.insert(domain.clone()) {
+                    let pool = state.db.clone();
+                    let d = domain.clone();
+                    tokio::spawn(async move {
+                        favicons::ensure_favicon(&pool, &d).await;
+                    });
+                }
             }
             Err(e) => {
                 failed += 1;
@@ -345,7 +353,9 @@ pub async fn bulk_import(
     }
 
     sqlx::query("INSERT INTO audit_log (event_type, details) VALUES ('BULK_IMPORT', ?)")
-        .bind(format!("Imported {imported}, skipped {skipped}, failed {failed}"))
+        .bind(format!(
+            "Imported {imported}, skipped {skipped}, failed {failed}"
+        ))
         .execute(&state.db)
         .await?;
 

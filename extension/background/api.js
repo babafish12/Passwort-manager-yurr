@@ -31,6 +31,10 @@ export class VaultAPI {
     return this.serverUrl;
   }
 
+  invalidateServerUrlCache() {
+    this.serverUrl = null;
+  }
+
   setToken(token) {
     this.token = token;
   }
@@ -134,6 +138,33 @@ export class VaultAPI {
 
   async deleteEntry(id) {
     return this.request('DELETE', `/entries/${id}`);
+  }
+
+  // Vault item endpoints
+  async listVaultItems(itemType) {
+    const path = itemType
+      ? `/vault-items?type=${encodeURIComponent(itemType)}`
+      : '/vault-items';
+    return this.request('GET', path);
+  }
+
+  async createVaultItem(itemType, payload) {
+    return this.request('POST', '/vault-items', {
+      item_type: itemType,
+      payload,
+    });
+  }
+
+  async updateVaultItem(id, payload) {
+    return this.request('PUT', `/vault-items/${id}`, { payload });
+  }
+
+  async deleteVaultItem(id) {
+    return this.request('DELETE', `/vault-items/${id}`);
+  }
+
+  async exportVault() {
+    return this.request('GET', '/vault/export');
   }
 
   // Generate password
