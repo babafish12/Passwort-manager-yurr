@@ -41,6 +41,15 @@ impl SessionStore {
         from + Self::inactivity_timeout_chrono()
     }
 
+    fn cleanup_expired_locked(
+        sessions: &mut HashMap<String, SessionData>,
+        now: DateTime<Utc>,
+    ) -> usize {
+        let before = sessions.len();
+        sessions.retain(|_, data| data.expires_at > now);
+        before - sessions.len()
+    }
+
     pub fn new() -> Self {
         let mut secret = vec![0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut secret);
@@ -75,11 +84,13 @@ impl SessionStore {
 
     pub async fn create_session(&self, session_id: String, encryption_key: Zeroizing<[u8; 32]>) {
         let mut sessions = self.sessions.write().await;
+        let now = Utc::now();
+        Self::cleanup_expired_locked(&mut sessions, now);
         sessions.insert(
             session_id,
             SessionData {
                 encryption_key,
-                expires_at: Self::next_expiry(Utc::now()),
+                expires_at: Self::next_expiry(now),
             },
         );
     }
@@ -94,13 +105,10 @@ impl SessionStore {
 
     pub async fn get_encryption_key(&self, session_id: &str) -> Option<Zeroizing<[u8; 32]>> {
         let mut sessions = self.sessions.write().await;
+        let now = Utc::now();
+        Self::cleanup_expired_locked(&mut sessions, now);
         if let Some(session) = sessions.get_mut(session_id) {
-            let now = Utc::now();
             // Use wall-clock timestamps so inactivity still expires across suspend/sleep.
-            if session.expires_at <= now {
-                sessions.remove(session_id);
-                return None;
-            }
             session.expires_at = Self::next_expiry(now);
             Some(session.encryption_key.clone())
         } else {
@@ -110,13 +118,8 @@ impl SessionStore {
 
     pub async fn has_active_session(&self, session_id: &str) -> bool {
         let mut sessions = self.sessions.write().await;
-        if let Some(session) = sessions.get(session_id) {
-            if session.expires_at > Utc::now() {
-                return true;
-            }
-        }
-        sessions.remove(session_id);
-        false
+        Self::cleanup_expired_locked(&mut sessions, Utc::now());
+        sessions.contains_key(session_id)
     }
 
     pub async fn remove_session(&self, session_id: &str) {
@@ -129,10 +132,9 @@ impl SessionStore {
         sessions.clear();
     }
 
-    pub async fn cleanup_expired(&self) {
+    pub async fn cleanup_expired(&self) -> usize {
         let mut sessions = self.sessions.write().await;
-        let now = Utc::now();
-        sessions.retain(|_, data| data.expires_at > now);
+        Self::cleanup_expired_locked(&mut sessions, Utc::now())
     }
 }
 
@@ -188,5 +190,62 @@ impl FromRequestParts<crate::AppState> for AuthenticatedSession {
                 operation_guard: Some(operation_guard),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_key(byte: u8) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new([byte; 32])
+    }
+
+    #[tokio::test]
+    async fn cleanup_expired_removes_only_expired_sessions() {
+        let store = SessionStore::new();
+        store
+            .create_session("active".to_string(), test_key(1))
+            .await;
+
+        {
+            let mut sessions = store.sessions.write().await;
+            sessions.insert(
+                "expired".to_string(),
+                SessionData {
+                    encryption_key: test_key(2),
+                    expires_at: Utc::now() - chrono::Duration::seconds(1),
+                },
+            );
+        }
+
+        assert_eq!(store.cleanup_expired().await, 1);
+        assert!(store.has_active_session("active").await);
+        assert!(!store.has_active_session("expired").await);
+    }
+
+    #[tokio::test]
+    async fn session_access_opportunistically_cleans_other_expired_sessions() {
+        let store = SessionStore::new();
+        store
+            .create_session("active".to_string(), test_key(1))
+            .await;
+
+        {
+            let mut sessions = store.sessions.write().await;
+            sessions.insert(
+                "expired".to_string(),
+                SessionData {
+                    encryption_key: test_key(2),
+                    expires_at: Utc::now() - chrono::Duration::seconds(1),
+                },
+            );
+        }
+
+        assert!(store.get_encryption_key("active").await.is_some());
+
+        let sessions = store.sessions.read().await;
+        assert!(sessions.contains_key("active"));
+        assert!(!sessions.contains_key("expired"));
     }
 }

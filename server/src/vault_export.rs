@@ -2,7 +2,7 @@ use axum::extract::State;
 use axum::Json;
 
 use crate::crypto;
-use crate::domain;
+use crate::entries;
 use crate::errors::AppError;
 use crate::models::*;
 use crate::session::AuthenticatedSession;
@@ -119,11 +119,71 @@ pub async fn import_vault(
         errors: Vec::new(),
     };
 
+    let mut conn = state.db.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut favicon_domains = Vec::new();
+
     for password in req.passwords {
         let id = import_id(&password.id);
-        let domain = domain::normalize_domain_lossy(&password.website_url);
-        let password_encrypted = match crypto::encrypt(&password.password, &session.encryption_key)
+        let entry = match entries::validate_create_entry(&CreateEntryRequest {
+            website_url: password.website_url.clone(),
+            username: password.username.clone(),
+            password: password.password.clone(),
+            notes: password.notes.clone(),
+        }) {
+            Ok(entry) => entry,
+            Err(err) => {
+                result.failed += 1;
+                result
+                    .errors
+                    .push(format!("{}: invalid password entry: {err}", password.id));
+                continue;
+            }
+        };
+
+        let existing_id: Option<(String,)> =
+            match sqlx::query_as("SELECT id FROM entries WHERE id = ?")
+                .bind(&id)
+                .fetch_optional(&mut *conn)
+                .await
+            {
+                Ok(existing) => existing,
+                Err(err) => {
+                    result.failed += 1;
+                    result
+                        .errors
+                        .push(format!("{}: duplicate id check failed: {err}", password.id));
+                    continue;
+                }
+            };
+        if existing_id.is_some() {
+            result.skipped_passwords += 1;
+            continue;
+        }
+
+        match entries::duplicate_entry_exists(
+            &mut *conn,
+            &entry.website_domain,
+            &entry.username,
+            None,
+        )
+        .await
         {
+            Ok(true) => {
+                result.skipped_passwords += 1;
+                continue;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                result.failed += 1;
+                result
+                    .errors
+                    .push(format!("{}: duplicate check failed: {err}", password.id));
+                continue;
+            }
+        }
+
+        let password_encrypted = match crypto::encrypt(&entry.password, &session.encryption_key) {
             Ok(encrypted) => encrypted,
             Err(err) => {
                 result.failed += 1;
@@ -134,7 +194,7 @@ pub async fn import_vault(
             }
         };
 
-        let notes_encrypted = if let Some(notes) = password.notes.as_deref() {
+        let notes_encrypted = if let Some(notes) = entry.notes.as_deref() {
             if notes.is_empty() {
                 None
             } else {
@@ -154,22 +214,24 @@ pub async fn import_vault(
         };
 
         match sqlx::query(
-            "INSERT OR IGNORE INTO entries (id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))",
+            "INSERT INTO entries (id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')), COALESCE(?, datetime('now')))",
         )
         .bind(&id)
-        .bind(&password.website_url)
-        .bind(&domain)
-        .bind(&password.username)
+        .bind(&entry.website_url)
+        .bind(&entry.website_domain)
+        .bind(&entry.username)
         .bind(&password_encrypted)
         .bind(&notes_encrypted)
         .bind(if password.favorite { 1_i64 } else { 0_i64 })
         .bind(non_empty(&password.created_at))
         .bind(non_empty(&password.updated_at))
-        .execute(&state.db)
+        .execute(&mut *conn)
         .await
         {
-            Ok(done) if done.rows_affected() == 0 => result.skipped_passwords += 1,
-            Ok(_) => result.imported_passwords += 1,
+            Ok(_) => {
+                result.imported_passwords += 1;
+                favicon_domains.push(entry.website_domain);
+            }
             Err(err) => {
                 result.failed += 1;
                 result
@@ -177,6 +239,18 @@ pub async fn import_vault(
                     .push(format!("{}: insert password failed: {err}", password.id));
             }
         }
+    }
+
+    if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
+        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
+        return Err(err.into());
+    }
+
+    for domain in favicon_domains {
+        let pool = state.db.clone();
+        tokio::spawn(async move {
+            crate::favicons::ensure_favicon(&pool, &domain).await;
+        });
     }
 
     for item in req.vault_items {

@@ -13,6 +13,24 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 
 ---
 
+## Current Security and Operations Notes
+
+- Server session defaults are `YURRR_JWT_EXPIRY_HOURS=24` and `YURRR_INACTIVITY_TIMEOUT_MINUTES=240`. The extension's relaxed inactivity mode defaults to 15 minutes unless changed in Options.
+- CORS can be pinned with `YURRR_CORS_ALLOWED_ORIGINS` as a comma-separated exact-origin allowlist. If unset, the server allows browser extension origins plus local/private HTTP(S) origins.
+- The generated self-signed TLS certificate is convenient for local setup, but LAN or Tailscale IP access can still hit SAN/name warnings. Use a custom certificate with the exact DNS/IP SANs you connect to if you want strict browser validation instead of a saved exception.
+- SQLite runs in WAL mode. Backups must include `vault.db`, `vault.db-wal`, and `vault.db-shm`, or be taken while the service is stopped/after a checkpoint.
+- Popup favicon display is disabled by default in Options. Server-side favicon discovery is also disabled by default; set `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you want the server to request saved-site icons.
+
+## Follow-up Work
+
+- Full encrypted restore UI for vault exports.
+- Real WebAuthn/passkey support; the current passkey tab stores metadata only.
+- Card and address autofill from the extension.
+- Metadata encryption for domains, usernames, labels, and item metadata.
+- Trash/undo flows and broader automated test coverage.
+
+---
+
 ## Changelog
 
 ### v0.7.0 — 2026-04-20 — Session Timeout Fix + UI Refresh
@@ -20,6 +38,7 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 - Server session defaults are now generous and configurable via environment variables:
   - `YURRR_JWT_EXPIRY_HOURS` (default: `24`)
   - `YURRR_INACTIVITY_TIMEOUT_MINUTES` (default: `240`)
+  - `YURRR_ENABLE_THIRD_PARTY_FAVICONS` (default: `false`)
 - This fixes the mismatch where strict server-side limits overruled higher extension inactivity settings (for example 150 minutes).
 - Verified: extension inactivity timeout logic still uses minutes consistently and applies values correctly to alarms and elapsed-time checks.
 - Popup UI modernized:

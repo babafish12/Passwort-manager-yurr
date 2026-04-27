@@ -303,6 +303,13 @@ small {
   background: rgba(57, 216, 130, 0.12);
 }
 
+.auto-email-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .auto-email-item input[type='checkbox'] {
   appearance: none;
   width: 36px;
@@ -312,6 +319,7 @@ small {
   background: #1b2b4b;
   position: relative;
   cursor: pointer;
+  flex-shrink: 0;
   transition: background-color var(--transition-fast), border-color var(--transition-fast);
 }
 

@@ -66,6 +66,13 @@ WorkingDirectory=/home/piper/vube/yurrr/server
 ExecStart=/home/piper/vube/yurrr/server/target/release/yurrr-server
 Restart=on-failure
 RestartSec=5
+# Optional: pin browser/extension origins instead of using the default local/private-origin policy.
+# Environment=YURRR_CORS_ALLOWED_ORIGINS=chrome-extension://<extension-id>,https://10.187.187.102:8443
+# Optional session limits. Defaults are 24 hours JWT max and 240 minutes inactivity.
+# Environment=YURRR_JWT_EXPIRY_HOURS=24
+# Environment=YURRR_INACTIVITY_TIMEOUT_MINUTES=240
+# Optional privacy opt-in: allow the server to fetch favicons from saved websites.
+# Environment=YURRR_ENABLE_THIRD_PARTY_FAVICONS=true
 
 [Install]
 WantedBy=multi-user.target
@@ -139,6 +146,8 @@ Before the extension can talk to the server, Brave needs to trust the cert.
 
 **You only need to do this once** (per browser profile). Brave remembers the exception.
 
+If you connect by LAN or Tailscale IP, the generated certificate may not contain that IP as a Subject Alternative Name. A saved browser exception is expected for the generated cert; use your own cert with the exact DNS/IP SANs if you want strict TLS validation without an exception.
+
 ### Step 2: Get the Extension Files
 
 Copy the extension folder from the Pi to your laptop. Options:
@@ -178,6 +187,7 @@ If you set up a git repo, clone it on both machines.
    ```
 3. Click **Test Connection** — should show "Connected!"
 4. Click **Save**
+5. In **Privacy**, leave website favicons disabled unless you want the popup to request saved-site icons from the server.
 
 ### Step 5: Initialize the Vault
 
@@ -221,7 +231,9 @@ If you set up a git repo, clone it on both machines.
 2. **Open Brave** on your laptop — extension is always ready
 3. **Click Yurrr icon** → enter master password to unlock
 4. **Browse normally** — Yurrr auto-fills login forms
-5. **Auto-locks after 15 minutes** of inactivity (server-side + extension-side)
+5. **Auto-locks according to your selected mode**
+   - Extension relaxed inactivity mode defaults to 15 minutes.
+   - Server-side session defaults are 24 hours maximum JWT age and 240 minutes inactivity.
 
 ---
 
@@ -233,6 +245,16 @@ If you set up a git repo, clone it on both machines.
 - **Restarting the server kills all sessions** (JWT signing key is in-memory only)
 - The database file (`vault.db`) contains only encrypted passwords
 - Communication is always over **HTTPS/TLS** (even the self-signed cert encrypts traffic)
+- SQLite uses WAL mode. For file backups, copy `vault.db`, `vault.db-wal`, and `vault.db-shm` together, or stop the service before copying.
+- Favicon display is disabled by default in the extension popup. Server-side favicon discovery is disabled by default too; enable `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you accept those external favicon requests.
+- CORS defaults allow extension origins and local/private HTTP(S) origins. Set `YURRR_CORS_ALLOWED_ORIGINS` to a comma-separated exact-origin allowlist for stricter deployments.
+
+## Current Follow-ups
+
+- Full encrypted restore UI for vault exports
+- Real WebAuthn/passkey support instead of stored passkey metadata
+- Card/address autofill
+- Metadata encryption for domains, usernames, labels, and item metadata
 
 ---
 
@@ -250,7 +272,7 @@ If you set up a git repo, clone it on both machines.
 - First login after server start is slower; subsequent ones use the same session
 
 ### "Session expired" errors
-- Your session expired (1 hour max, or 15 min inactivity)
+- Your session expired. Defaults are 24 hours max JWT age and 240 minutes server inactivity; the extension relaxed inactivity setting defaults to 15 minutes.
 - Just unlock again with your master password
 
 ### Extension not detecting forms

@@ -1,5 +1,27 @@
+const STORAGE_KEY_ENABLE_FAVICONS = 'yurrr_enable_favicons';
+let faviconsEnabledCache = null;
+
+async function areFaviconsEnabled() {
+  if (faviconsEnabledCache !== null) return faviconsEnabledCache;
+
+  try {
+    const result = await chrome.storage.local.get(STORAGE_KEY_ENABLE_FAVICONS);
+    faviconsEnabledCache = result[STORAGE_KEY_ENABLE_FAVICONS] === true;
+  } catch {
+    faviconsEnabledCache = false;
+  }
+
+  return faviconsEnabledCache;
+}
+
+window.areFaviconsEnabled = areFaviconsEnabled;
+
 // Utility: Send message to service worker
-function sendMessage(type, payload = {}) {
+async function sendMessage(type, payload = {}) {
+  if (type === 'GET_FAVICON' && !(await areFaviconsEnabled())) {
+    return { dataUrl: null };
+  }
+
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type, payload }, (response) => {
       if (chrome.runtime.lastError) {
@@ -184,6 +206,7 @@ async function handleSessionLoss(err) {
 
   const lockBtn = document.getElementById('lock-btn');
   if (lockBtn) lockBtn.classList.add('hidden');
+  window.VaultSections?.invalidateEntityCache?.();
   hideAllScreens();
   LoginScreen.show();
   showToast(err?.message || 'Verbindung verloren. Bitte erneut anmelden.', 'error');
@@ -210,12 +233,20 @@ function showToast(message, variant = 'success') {
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.dataset.variant = variant;
-  toast.innerHTML = `
-    <div class="toast-inner">
-      <span class="toast-icon">${getPopupIcon(variant === 'error' ? 'x' : 'check', 'icon-sm')}</span>
-      <span class="toast-message">${escapeHtml(message)}</span>
-    </div>
-  `;
+  toast.setAttribute('role', variant === 'error' ? 'alert' : 'status');
+  toast.setAttribute('aria-live', variant === 'error' ? 'assertive' : 'polite');
+  toast.setAttribute('aria-atomic', 'true');
+
+  const inner = document.createElement('div');
+  inner.className = 'toast-inner';
+  const icon = document.createElement('span');
+  icon.className = 'toast-icon';
+  icon.innerHTML = getPopupIcon(variant === 'error' ? 'x' : 'check', 'icon-sm');
+  const text = document.createElement('span');
+  text.className = 'toast-message';
+  text.textContent = message;
+  inner.append(icon, text);
+  toast.appendChild(inner);
 
   document.body.appendChild(toast);
   requestAnimationFrame(() => {
@@ -245,13 +276,15 @@ function showConfirmDialog({
   confirmIcon = 'check',
 } = {}) {
   return new Promise((resolve) => {
+    const titleId = `confirm-title-${Date.now()}`;
+    const messageId = `confirm-message-${Date.now()}`;
     const overlay = document.createElement('div');
     overlay.className = 'confirm-overlay';
     overlay.setAttribute('tabindex', '-1');
     overlay.innerHTML = `
-      <div class="confirm-modal">
-        <div class="confirm-title">${escapeHtml(title)}</div>
-        <p class="confirm-message">${escapeHtml(message)}</p>
+      <div class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="${titleId}" aria-describedby="${messageId}">
+        <div class="confirm-title" id="${titleId}">${escapeHtml(title)}</div>
+        <p class="confirm-message" id="${messageId}">${escapeHtml(message)}</p>
         <div class="confirm-actions">
           <button type="button" class="btn btn-secondary confirm-cancel">
             <span class="btn-content">${getPopupIcon('x', 'icon-sm')}<span class="btn-label">${escapeHtml(cancelText)}</span>
@@ -309,6 +342,7 @@ const VaultSections = {
   },
   migrationComplete: {},
   migrationPromises: {},
+  entityCache: {},
 
   init() {
     this.listScreen = document.getElementById('list-screen');
@@ -335,31 +369,46 @@ const VaultSections = {
 
   updateChipState() {
     const chips = [this.passwordsBtn, this.passkeysBtn, this.cardsBtn, this.addressesBtn];
-    chips.forEach((chip) => chip.classList.remove('section-chip-active'));
+    chips.forEach((chip) => {
+      chip.classList.remove('section-chip-active');
+      chip.setAttribute('aria-pressed', 'false');
+    });
 
-    if (this.activeTab === 'passwords') this.passwordsBtn.classList.add('section-chip-active');
-    if (this.activeTab === 'passkeys') this.passkeysBtn.classList.add('section-chip-active');
-    if (this.activeTab === 'cards') this.cardsBtn.classList.add('section-chip-active');
-    if (this.activeTab === 'addresses') this.addressesBtn.classList.add('section-chip-active');
+    if (this.activeTab === 'passwords') {
+      this.passwordsBtn.classList.add('section-chip-active');
+      this.passwordsBtn.setAttribute('aria-pressed', 'true');
+    }
+    if (this.activeTab === 'passkeys') {
+      this.passkeysBtn.classList.add('section-chip-active');
+      this.passkeysBtn.setAttribute('aria-pressed', 'true');
+    }
+    if (this.activeTab === 'cards') {
+      this.cardsBtn.classList.add('section-chip-active');
+      this.cardsBtn.setAttribute('aria-pressed', 'true');
+    }
+    if (this.activeTab === 'addresses') {
+      this.addressesBtn.classList.add('section-chip-active');
+      this.addressesBtn.setAttribute('aria-pressed', 'true');
+    }
   },
 
-  async setActiveTab(tab) {
+  async setActiveTab(tab, options = {}) {
     this.activeTab = tab;
     this.updateChipState();
 
-    this.listScreen.classList.remove('hidden');
     this.detailScreen.classList.add('hidden');
     this.formScreen.classList.add('hidden');
-    animatePopupScreen(this.listScreen, 'back');
 
     if (tab === 'passwords') {
       this.searchInput.placeholder = 'Search passwords...';
       this.addBtn.title = 'Add password';
       this.addBtn.setAttribute('aria-label', 'Add password');
-      await EntryList.show();
+      await EntryList.show({ initialEntries: options.passwordEntries || null });
       return;
     }
 
+    this.listScreen.classList.remove('hidden');
+    animatePopupScreen(this.listScreen, 'back');
     this.searchInput.value = '';
     this.addBtn.title = tab === 'cards' ? 'Add card' : tab === 'passkeys' ? 'Add passkey' : 'Add address';
     this.addBtn.setAttribute('aria-label', this.addBtn.title);
@@ -565,8 +614,23 @@ const VaultSections = {
       showToast(`Local migration failed: ${err.message}`, 'error');
     }
 
+    if (this.entityCache[itemType]) {
+      return this.entityCache[itemType];
+    }
+
     const items = await this.fetchVaultItems(itemType);
-    return items.map((item) => this.mapVaultItem(item, itemType));
+    const mapped = items.map((item) => this.mapVaultItem(item, itemType));
+    this.entityCache[itemType] = mapped;
+    return mapped;
+  },
+
+  invalidateEntityCache(itemType) {
+    if (itemType) {
+      delete this.entityCache[itemType];
+      return;
+    }
+
+    this.entityCache = {};
   },
 
   async getVaultEntity(itemType, id) {
@@ -575,20 +639,30 @@ const VaultSections = {
   },
 
   async createVaultEntity(itemType, payload) {
-    return await sendMessage('CREATE_VAULT_ITEM', { itemType, payload });
+    const result = await sendMessage('CREATE_VAULT_ITEM', { itemType, payload });
+    this.invalidateEntityCache(itemType);
+    return result;
   },
 
   async updateVaultEntity(id, payload) {
-    return await sendMessage('UPDATE_VAULT_ITEM', { id, payload });
+    const result = await sendMessage('UPDATE_VAULT_ITEM', { id, payload });
+    this.invalidateEntityCache();
+    return result;
   },
 
   async deleteVaultEntity(id) {
-    return await sendMessage('DELETE_VAULT_ITEM', { id });
+    const result = await sendMessage('DELETE_VAULT_ITEM', { id });
+    this.invalidateEntityCache();
+    return result;
   },
 
   renderLoadError(label, err) {
     this.listEl.innerHTML = `<div class="empty-state">Could not load ${escapeHtml(label)}</div>`;
     showToast(`Error: ${err.message}`, 'error');
+  },
+
+  isActivationKey(event) {
+    return event.key === 'Enter' || event.key === ' ';
   },
 
   getItemTypeLabel(itemType, count = 2) {
@@ -734,13 +808,13 @@ const VaultSections = {
     this.listEl.innerHTML = filtered
       .map(
         (passkey) => `
-      <div class="entry-item" data-passkey-id="${escapeHtml(passkey.id)}">
+      <div class="entry-item" data-passkey-id="${escapeHtml(passkey.id)}" role="button" tabindex="0">
         <div class="entry-icon">${getPopupIcon('fingerprint', 'icon-sm')}</div>
         <div class="entry-info">
           <div class="entry-domain">${escapeHtml(this.formatPasskeyLabel(passkey))}</div>
           <div class="entry-username">${escapeHtml(passkey.user_name || passkey.display_name || 'No account')} • ${escapeHtml(passkey.rp_id || 'No RP ID')}</div>
         </div>
-        <button class="mini-icon-btn danger" data-passkey-delete="${escapeHtml(passkey.id)}" title="Delete" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
+        <button class="mini-icon-btn danger" data-passkey-delete="${escapeHtml(passkey.id)}" title="Delete" aria-label="Delete passkey" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
         <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
       </div>
     `
@@ -751,6 +825,15 @@ const VaultSections = {
       el.addEventListener('click', async (event) => {
         const deleteBtn = event.target.closest('[data-passkey-delete]');
         if (deleteBtn) return;
+        try {
+          await this.editPasskey(el.dataset.passkeyId);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
+      });
+      el.addEventListener('keydown', async (event) => {
+        if (!this.isActivationKey(event) || event.target.closest('[data-passkey-delete]')) return;
+        event.preventDefault();
         try {
           await this.editPasskey(el.dataset.passkeyId);
         } catch (err) {
@@ -796,13 +879,13 @@ const VaultSections = {
     this.listEl.innerHTML = filtered
       .map(
         (card) => `
-      <div class="entry-item" data-card-id="${escapeHtml(card.id)}">
+      <div class="entry-item" data-card-id="${escapeHtml(card.id)}" role="button" tabindex="0">
         <div class="entry-icon">${getPopupIcon('creditCard', 'icon-sm')}</div>
         <div class="entry-info">
           <div class="entry-domain">${escapeHtml(this.formatBrand(card.brand))} ${escapeHtml(this.formatCardNumberMasked(card.number || card.last4 || ''))}</div>
           <div class="entry-username">${escapeHtml(card.cardholder_name || 'No cardholder')} • exp ${escapeHtml(String(card.exp_month).padStart(2, '0'))}/${escapeHtml(String(card.exp_year || ''))}</div>
         </div>
-        <button class="mini-icon-btn danger" data-card-delete="${escapeHtml(card.id)}" title="Delete" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
+        <button class="mini-icon-btn danger" data-card-delete="${escapeHtml(card.id)}" title="Delete" aria-label="Delete card" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
         <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
       </div>
     `
@@ -813,6 +896,15 @@ const VaultSections = {
       el.addEventListener('click', async (event) => {
         const deleteBtn = event.target.closest('[data-card-delete]');
         if (deleteBtn) return;
+        try {
+          await this.editCard(el.dataset.cardId);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
+      });
+      el.addEventListener('keydown', async (event) => {
+        if (!this.isActivationKey(event) || event.target.closest('[data-card-delete]')) return;
+        event.preventDefault();
         try {
           await this.editCard(el.dataset.cardId);
         } catch (err) {
@@ -858,13 +950,13 @@ const VaultSections = {
     this.listEl.innerHTML = filtered
       .map(
         (address) => `
-      <div class="entry-item" data-address-id="${escapeHtml(address.id)}">
+      <div class="entry-item" data-address-id="${escapeHtml(address.id)}" role="button" tabindex="0">
         <div class="entry-icon">${getPopupIcon('home', 'icon-sm')}</div>
         <div class="entry-info">
           <div class="entry-domain">${escapeHtml(address.label || address.full_name || 'Address')}</div>
           <div class="entry-username">${escapeHtml(address.line1 || '')}, ${escapeHtml(address.city || '')} ${escapeHtml(address.postal_code || '')}</div>
         </div>
-        <button class="mini-icon-btn danger" data-address-delete="${escapeHtml(address.id)}" title="Delete" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
+        <button class="mini-icon-btn danger" data-address-delete="${escapeHtml(address.id)}" title="Delete" aria-label="Delete address" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
         <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
       </div>
     `
@@ -875,6 +967,15 @@ const VaultSections = {
       el.addEventListener('click', async (event) => {
         const deleteBtn = event.target.closest('[data-address-delete]');
         if (deleteBtn) return;
+        try {
+          await this.editAddress(el.dataset.addressId);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
+      });
+      el.addEventListener('keydown', async (event) => {
+        if (!this.isActivationKey(event) || event.target.closest('[data-address-delete]')) return;
+        event.preventDefault();
         try {
           await this.editAddress(el.dataset.addressId);
         } catch (err) {
@@ -1169,8 +1270,11 @@ const VaultSections = {
 
   async showEntityForm({ title, fields, submitLabel = 'Save', helper = '' }) {
     return new Promise((resolve) => {
+      const titleId = `entity-modal-title-${Date.now()}`;
+      const helperId = `entity-modal-helper-${Date.now()}`;
       const overlay = document.createElement('div');
       overlay.className = 'entity-modal-overlay';
+      overlay.setAttribute('tabindex', '-1');
 
       const formBody = fields
         .map((field) => {
@@ -1189,9 +1293,9 @@ const VaultSections = {
         .join('');
 
       overlay.innerHTML = `
-        <div class="entity-modal-card">
-          <div class="entity-modal-title">${escapeHtml(title)}</div>
-          ${helper ? `<div class="entity-modal-helper">${escapeHtml(helper)}</div>` : ''}
+        <div class="entity-modal-card" role="dialog" aria-modal="true" aria-labelledby="${titleId}"${helper ? ` aria-describedby="${helperId}"` : ''}>
+          <div class="entity-modal-title" id="${titleId}">${escapeHtml(title)}</div>
+          ${helper ? `<div class="entity-modal-helper" id="${helperId}">${escapeHtml(helper)}</div>` : ''}
           <form id="entity-modal-form">
             ${formBody}
             <div class="entity-modal-actions">
@@ -1209,13 +1313,21 @@ const VaultSections = {
       document.body.appendChild(overlay);
 
       const close = (result = null) => {
+        overlay.removeEventListener('keydown', onKeydown);
         overlay.remove();
         resolve(result);
+      };
+
+      const onKeydown = (event) => {
+        if (event.key === 'Escape') {
+          close(null);
+        }
       };
 
       overlay.addEventListener('click', (event) => {
         if (event.target === overlay) close(null);
       });
+      overlay.addEventListener('keydown', onKeydown);
 
       overlay.querySelector('#entity-cancel').addEventListener('click', () => close(null));
 
@@ -1258,6 +1370,15 @@ document.getElementById('settings-btn').addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
 });
 
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local' && changes.yurrr_server_url) {
+    window.VaultSections?.invalidateEntityCache?.();
+  }
+  if (areaName === 'local' && changes[STORAGE_KEY_ENABLE_FAVICONS]) {
+    faviconsEnabledCache = changes[STORAGE_KEY_ENABLE_FAVICONS].newValue === true;
+  }
+});
+
 // Lock button
 document.getElementById('lock-btn').addEventListener('click', async () => {
   try {
@@ -1265,6 +1386,7 @@ document.getElementById('lock-btn').addEventListener('click', async () => {
   } catch {
     // local lock fallback still happens below
   }
+  window.VaultSections?.invalidateEntityCache?.();
   document.getElementById('lock-btn').classList.add('hidden');
   hideAllScreens();
   LoginScreen.show();
@@ -1277,25 +1399,14 @@ function hideAllScreens() {
   document.getElementById('form-screen').classList.add('hidden');
 }
 
-// Utility: get server URL for cert warmup
-async function getServerUrl() {
-  const result = await chrome.storage.local.get('yurrr_server_url');
-  return result.yurrr_server_url || 'https://localhost:8443';
-}
-
 // Startup: check if unlocked
 (async () => {
   try {
     const result = await sendMessage('IS_UNLOCKED');
     if (result.unlocked) {
-      // Verify server is reachable (also warms up self-signed cert)
-      const serverUrl = await getServerUrl();
-      try {
-        await fetch(`${serverUrl}/api/v1/auth/status`);
-      } catch {
-        // Server unreachable — auto-lock and show login
-        await sendMessage('LOGOUT');
+      if (result.reachable === false) {
         LoginScreen.show();
+        showToast('Server not reachable. Check connection or certificate.', 'error');
         return;
       }
 
@@ -1303,6 +1414,9 @@ async function getServerUrl() {
       document.getElementById('lock-btn').classList.remove('hidden');
       await VaultSections.setActiveTab('passwords');
     } else {
+      if (result.reason === 'session_invalid') {
+        showToast('Session expired. Please log in again.', 'error');
+      }
       LoginScreen.show();
     }
   } catch {

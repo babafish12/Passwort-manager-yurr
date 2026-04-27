@@ -2,9 +2,9 @@ CREATE TABLE IF NOT EXISTS master_config (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     password_hash   TEXT    NOT NULL,
     encryption_salt TEXT    NOT NULL,
-    argon2_m_cost   INTEGER NOT NULL DEFAULT 65536,
-    argon2_t_cost   INTEGER NOT NULL DEFAULT 3,
-    argon2_p_cost   INTEGER NOT NULL DEFAULT 4,
+    argon2_m_cost   INTEGER NOT NULL DEFAULT 16384,
+    argon2_t_cost   INTEGER NOT NULL DEFAULT 2,
+    argon2_p_cost   INTEGER NOT NULL DEFAULT 2,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );

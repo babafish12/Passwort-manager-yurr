@@ -4,6 +4,7 @@ export class VaultAPI {
   constructor() {
     this.token = null;
     this.serverUrl = null;
+    this.tokenServerUrl = null;
   }
 
   createError(message, code) {
@@ -35,12 +36,27 @@ export class VaultAPI {
     this.serverUrl = null;
   }
 
-  setToken(token) {
+  setToken(token, serverUrl = null) {
     this.token = token;
+    this.tokenServerUrl = serverUrl || this.serverUrl || null;
   }
 
   clearToken() {
     this.token = null;
+    this.tokenServerUrl = null;
+  }
+
+  isIdempotentMethod(method) {
+    return ['GET', 'HEAD', 'OPTIONS'].includes(String(method || '').toUpperCase());
+  }
+
+  sameServerOrigin(a, b) {
+    if (!a || !b) return true;
+    try {
+      return new URL(a).origin === new URL(b).origin;
+    } catch {
+      return a === b;
+    }
   }
 
   async request(method, path, body = null, requiresAuth = true) {
@@ -49,6 +65,10 @@ export class VaultAPI {
 
     const headers = { 'Content-Type': 'application/json' };
     if (requiresAuth && this.token) {
+      if (!this.sameServerOrigin(this.tokenServerUrl, serverUrl)) {
+        this.clearToken();
+        throw this.createError('Session server changed. Please log in again.', 'AUTH_ERROR');
+      }
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
@@ -57,7 +77,7 @@ export class VaultAPI {
       options.body = JSON.stringify(body);
     }
 
-    const maxAttempts = 2;
+    const maxAttempts = this.isIdempotentMethod(method) ? 2 : 1;
     let response;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -108,7 +128,7 @@ export class VaultAPI {
 
   async login(masterPassword) {
     const data = await this.request('POST', '/auth/login', { master_password: masterPassword }, false);
-    this.token = data.token;
+    this.setToken(data.token, await this.getServerUrl());
     return data;
   }
 
@@ -116,6 +136,10 @@ export class VaultAPI {
     const result = await this.request('POST', '/auth/logout');
     this.clearToken();
     return result;
+  }
+
+  async validateSession() {
+    return this.request('GET', '/auth/session');
   }
 
   // Entry endpoints
@@ -184,6 +208,10 @@ export class VaultAPI {
     const url = `${serverUrl}${API_BASE}/favicons/${encodeURIComponent(domain)}`;
     const headers = {};
     if (this.token) {
+      if (!this.sameServerOrigin(this.tokenServerUrl, serverUrl)) {
+        this.clearToken();
+        throw this.createError('Session server changed. Please log in again.', 'AUTH_ERROR');
+      }
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 

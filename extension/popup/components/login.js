@@ -108,6 +108,7 @@ const LoginScreen = {
 
     try {
       await sendMessage('LOGIN', { masterPassword: password });
+      window.VaultSections?.invalidateEntityCache?.();
       this.hide();
       if (window.VaultSections?.setActiveTab) {
         await window.VaultSections.setActiveTab(window.VaultSections.activeTab || 'passwords');

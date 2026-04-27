@@ -33,6 +33,7 @@ body {
     radial-gradient(100% 70% at -15% 100%, rgba(75, 146, 255, 0.12), transparent 52%),
     var(--bg-primary);
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 #app {
@@ -421,6 +422,7 @@ textarea {
 .entry-list {
   max-height: 360px;
   overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: rgba(151, 174, 214, 0.44) transparent;
 }
@@ -459,7 +461,12 @@ textarea {
   border-color: rgba(57, 216, 130, 0.28);
   background: #182a4e;
   box-shadow: 0 8px 18px rgba(57, 216, 130, 0.15);
-  transform: scale(1.015);
+}
+
+.entry-item:focus-visible {
+  outline: none;
+  border-color: rgba(57, 216, 130, 0.58);
+  box-shadow: 0 0 0 2px rgba(57, 216, 130, 0.26);
 }
 
 .entry-icon {
@@ -863,6 +870,7 @@ input:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
 select:focus-visible,
+.entry-item:focus-visible,
 .copy-btn:focus-visible,
 .icon-btn:focus-visible,
 .section-chip:focus-visible,

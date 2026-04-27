@@ -12,7 +12,7 @@ import {
 const api = new VaultAPI();
 const session = new SessionManager(api);
 const faviconCache = new Map();
-const PENDING_CREDENTIALS_TTL_MS = 30 * 1000;
+const PENDING_CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
 const MAX_AUTO_EMAIL_SUGGESTIONS = 100;
 const AUTH_REQUIRED_TYPES = new Set([
@@ -35,13 +35,30 @@ const AUTH_REQUIRED_TYPES = new Set([
   'CHANGE_PASSWORD',
   'GET_KNOWN_EMAIL_USERNAMES',
 ]);
+const CONTENT_SAFE_MESSAGE_TYPES = new Set([
+  'CHECK_CREDENTIALS',
+  'GET_CREDENTIAL_FOR_FILL',
+  'GET_EMAIL_SUGGESTIONS',
+  'STORE_DISCOVERED_EMAIL',
+  'PENDING_USERNAME',
+  'GET_PENDING_USERNAME',
+  'CLEAR_PENDING_USERNAME',
+  'PENDING_CREDENTIALS',
+  'CHECK_PENDING_CREDENTIALS',
+  'CLEAR_PENDING_CREDENTIALS',
+  'FORM_SUBMITTED',
+  'GENERATE_PASSWORD',
+]);
 
 const startupReady = initializeServiceWorker();
 
 async function initializeServiceWorker() {
   try {
     await restrictLocalStorageAccess();
-    await session.loadToken();
+    const token = await session.loadToken();
+    if (!token) {
+      await clearAllPendingState();
+    }
   } finally {
     session.setupIdleDetection();
   }
@@ -64,15 +81,25 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     return;
   }
 
+  handleServerUrlChange().catch(() => {
+    api.clearToken();
+  });
+});
+
+async function handleServerUrlChange() {
   api.invalidateServerUrlCache();
   faviconCache.clear();
   session.clearCache();
-});
+  await session.clearToken();
+  await clearAllPendingState();
+}
 
 // Auto-lock alarm handler
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'auto-lock') {
     await session.lock();
+    faviconCache.clear();
+    await clearAllPendingState();
   }
 });
 
@@ -145,7 +172,12 @@ async function getKnownEmailUsernamesFromVault() {
   try {
     const entries = await api.listEntries();
     return mergeEmailLists(entries.map((entry) => entry.username));
-  } catch {
+  } catch (err) {
+    if (err?.code === 'AUTH_ERROR') {
+      await session.forceLocalLock();
+      faviconCache.clear();
+      await clearAllPendingState();
+    }
     return [];
   }
 }
@@ -214,6 +246,15 @@ function parseUrl(value) {
   }
 }
 
+function parseUrlWithDefaultScheme(value) {
+  const direct = parseUrl(value);
+  if (direct) return direct;
+
+  const normalized = String(value || '').trim();
+  if (!normalized) return null;
+  return parseUrl(`https://${normalized}`);
+}
+
 function normalizeHostname(hostname) {
   return String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
 }
@@ -262,11 +303,33 @@ function isCredentialPageAllowed(pageUrl) {
   return false;
 }
 
+function stripCommonWwwPrefix(hostname) {
+  const host = normalizeHostname(hostname);
+  return host.startsWith('www.') ? host.slice(4) : host;
+}
+
+function isSameCredentialHost(pageHost, credentialHost) {
+  const page = normalizeHostname(pageHost);
+  const credential = normalizeHostname(credentialHost);
+  if (!page || !credential) return false;
+  return page === credential || stripCommonWwwPrefix(page) === stripCommonWwwPrefix(credential);
+}
+
+function getCredentialHost(credential) {
+  const credentialUrl = parseUrlWithDefaultScheme(credential?.website_url);
+  return normalizeHostname(credentialUrl?.hostname || credential?.website_domain || '');
+}
+
 function isCredentialAllowedForPage(credential, pageUrl) {
   const page = parseUrl(pageUrl);
   if (!page || !isCredentialPageAllowed(page.href)) return false;
 
-  const credentialUrl = parseUrl(credential?.website_url);
+  const credentialHost = getCredentialHost(credential);
+  if (!isSameCredentialHost(page.hostname, credentialHost)) {
+    return false;
+  }
+
+  const credentialUrl = parseUrlWithDefaultScheme(credential?.website_url);
   if (page.protocol === 'http:' && credentialUrl?.protocol === 'https:') {
     return false;
   }
@@ -274,13 +337,72 @@ function isCredentialAllowedForPage(credential, pageUrl) {
   return true;
 }
 
+function getExtensionOrigin() {
+  return parseUrl(chrome.runtime.getURL(''))?.origin || '';
+}
+
+function isExtensionPageSender(sender) {
+  if (sender?.id === chrome.runtime.id && !sender?.tab) {
+    return true;
+  }
+
+  const senderUrl = parseUrl(sender?.url || sender?.origin || '');
+  return Boolean(senderUrl && senderUrl.origin === getExtensionOrigin());
+}
+
+function isContentScriptSender(sender) {
+  if (isExtensionPageSender(sender)) return false;
+  const senderUrl = parseUrl(sender?.url || '');
+  return Boolean(sender?.tab && senderUrl && (senderUrl.protocol === 'http:' || senderUrl.protocol === 'https:'));
+}
+
+function assertMessageAllowed(type, sender) {
+  if (!type || typeof type !== 'string') {
+    throw new Error('Missing message type');
+  }
+
+  if (isExtensionPageSender(sender)) {
+    return;
+  }
+
+  if (isContentScriptSender(sender) && CONTENT_SAFE_MESSAGE_TYPES.has(type)) {
+    return;
+  }
+
+  const error = new Error('Message type not allowed from this sender');
+  error.code = 'FORBIDDEN';
+  throw error;
+}
+
 function getMessagePageUrl(payload, sender) {
+  if (isContentScriptSender(sender)) {
+    return sender?.url || '';
+  }
+
   return sender?.url || sender?.tab?.url || payload?.pageUrl || payload?.url || '';
 }
 
 function getDomainFromUrl(url, fallback = '') {
   const parsed = parseUrl(url);
   return normalizeDomain(parsed?.hostname || fallback);
+}
+
+function getSafeCredentialUrlForPage(candidateUrl, pageUrl) {
+  const page = parseUrl(pageUrl);
+  if (!page || !isCredentialPageAllowed(page.href)) {
+    return '';
+  }
+
+  const candidate = parseUrl(candidateUrl);
+  if (
+    candidate &&
+    isCredentialPageAllowed(candidate.href) &&
+    isSameCredentialHost(page.hostname, candidate.hostname)
+  ) {
+    return candidate.href;
+  }
+
+  return page.href;
 }
 
 async function writePendingUsernames(usernames) {
@@ -354,7 +476,7 @@ async function clearPendingUsername(domain) {
 }
 
 async function setPendingCredentials(payload) {
-  const domain = normalizeDomain(payload?.domain) || getDomainFromUrl(payload?.url);
+  const domain = getDomainFromUrl(payload?.url);
   const password = String(payload?.password || '');
   if (!domain || !password) return false;
 
@@ -364,6 +486,8 @@ async function setPendingCredentials(payload) {
       domain,
       username: String(payload.username || '').trim(),
       password,
+      pageUrl: payload.pageUrl || payload.url || '',
+      promptReady: payload.promptReady === true,
       expiresAt: Date.now() + PENDING_CREDENTIALS_TTL_MS,
     },
   });
@@ -433,6 +557,7 @@ async function handleMessage(message, sender) {
   await startupReady;
 
   const { type, payload = {} } = message || {};
+  assertMessageAllowed(type, sender);
 
   switch (type) {
     case 'GET_STATUS':
@@ -456,8 +581,31 @@ async function handleMessage(message, sender) {
       await clearAllPendingState();
       return { success: true };
 
-    case 'IS_UNLOCKED':
-      return { unlocked: await session.isUnlocked() };
+    case 'IS_UNLOCKED': {
+      if (!(await session.isUnlocked())) {
+        await clearAllPendingState();
+        return { unlocked: false };
+      }
+
+      try {
+        await api.validateSession();
+        await session.resetAutoLock();
+        return { unlocked: true, reachable: true };
+      } catch (err) {
+        if (err?.code === 'AUTH_ERROR') {
+          await session.forceLocalLock();
+          faviconCache.clear();
+          await clearAllPendingState();
+          return { unlocked: false, reason: 'session_invalid' };
+        }
+
+        if (err?.code === 'NETWORK_ERROR') {
+          return { unlocked: true, reachable: false, reason: 'network' };
+        }
+
+        throw err;
+      }
+    }
 
     case 'LIST_ENTRIES': {
       await session.resetAutoLock();
@@ -536,8 +684,7 @@ async function handleMessage(message, sender) {
         return { credentials: [] };
       }
 
-      await session.resetAutoLock();
-      const domain = normalizeDomain(payload.domain) || getDomainFromUrl(pageUrl);
+      const domain = getDomainFromUrl(pageUrl);
       if (!domain) {
         return { credentials: [] };
       }
@@ -572,7 +719,7 @@ async function handleMessage(message, sender) {
         return { credential: null };
       }
 
-      const domain = normalizeDomain(payload.domain) || getDomainFromUrl(pageUrl);
+      const domain = getDomainFromUrl(pageUrl);
       if (!domain || !payload.id) {
         return { credential: null };
       }
@@ -626,8 +773,9 @@ async function handleMessage(message, sender) {
       if (!isCredentialPageAllowed(pageUrl)) {
         return { stored: false };
       }
-      const domain = normalizeDomain(payload.domain) || getDomainFromUrl(pageUrl);
-      return { stored: await setPendingUsername(domain, payload.url || pageUrl, payload.username) };
+      const domain = getDomainFromUrl(pageUrl);
+      const url = getSafeCredentialUrlForPage(payload.url, pageUrl);
+      return { stored: await setPendingUsername(domain, url, payload.username) };
     }
 
     case 'GET_PENDING_USERNAME': {
@@ -635,23 +783,33 @@ async function handleMessage(message, sender) {
       if (!isCredentialPageAllowed(pageUrl)) {
         return { username: '' };
       }
-      const domain = normalizeDomain(payload?.domain) || getDomainFromUrl(pageUrl);
+      const domain = getDomainFromUrl(pageUrl);
       return { username: await getPendingUsername(domain) };
     }
 
     case 'CLEAR_PENDING_USERNAME': {
-      await clearPendingUsername(payload?.domain);
+      const pageUrl = getMessagePageUrl(payload, sender);
+      if (isContentScriptSender(sender)) {
+        if (!isCredentialPageAllowed(pageUrl)) {
+          return { cleared: false };
+        }
+        await clearPendingUsername(getDomainFromUrl(pageUrl));
+        return { cleared: true };
+      }
+
+      const domain = normalizeDomain(payload?.domain);
+      await clearPendingUsername(domain);
       return { cleared: true };
     }
 
     case 'PENDING_CREDENTIALS': {
       const pageUrl = getMessagePageUrl(payload, sender);
-      const credentialUrl = payload.url || pageUrl;
-      if (!isCredentialPageAllowed(pageUrl) || !isCredentialPageAllowed(credentialUrl)) {
+      if (!isCredentialPageAllowed(pageUrl)) {
         return { stored: false };
       }
 
-      const domain = normalizeDomain(payload.domain) || getDomainFromUrl(credentialUrl);
+      const credentialUrl = getSafeCredentialUrlForPage(payload.url, pageUrl);
+      const domain = getDomainFromUrl(pageUrl);
       const username = payload.username || await getPendingUsername(domain) || '';
       return {
         stored: await setPendingCredentials({
@@ -669,9 +827,13 @@ async function handleMessage(message, sender) {
         return { hasPending: false };
       }
 
-      const domain = normalizeDomain(payload.domain) || getDomainFromUrl(pageUrl);
+      const domain = getDomainFromUrl(pageUrl);
       const pending = await getPendingCredentials(domain);
       if (!pending || !isCredentialAllowedForPage({ website_url: pending.url }, pageUrl)) {
+        return { hasPending: false };
+      }
+
+      if (pending.promptReady !== true && pending.pageUrl === pageUrl) {
         return { hasPending: false };
       }
 
@@ -696,21 +858,41 @@ async function handleMessage(message, sender) {
         return { saved: false };
       }
 
-      const { url, username, password } = payload;
-      if (!isCredentialPageAllowed(url)) {
+      const { username, password } = payload;
+      const pageUrl = getMessagePageUrl(payload, sender);
+      if (!isCredentialPageAllowed(pageUrl)) {
         return { saved: false };
       }
 
       await session.resetAutoLock();
-      const domain = getDomainFromUrl(url);
+      const url = getSafeCredentialUrlForPage(payload.url, pageUrl);
+      const domain = getDomainFromUrl(pageUrl);
       if (!domain) {
         return { saved: false };
       }
 
       const existing = (await api.listEntries(domain))
-        .filter((entry) => isCredentialAllowedForPage(entry, url));
+        .filter((entry) => isCredentialAllowedForPage(entry, pageUrl));
       const rememberedUsername = await getPendingUsername(domain);
       const effectiveUsername = String(username || rememberedUsername || '').trim();
+      const confirmUpdate = payload.confirmUpdate === true;
+      const requestedEntryId = String(payload.entryId || '');
+
+      if (confirmUpdate && requestedEntryId) {
+        const match = existing.find((entry) => String(entry.id) === requestedEntryId);
+        if (!match) {
+          return {
+            saved: false,
+            reason: 'entry_not_found',
+            message: 'Could not find the selected saved login.',
+          };
+        }
+
+        await api.updateEntry(match.id, { password });
+        session.clearCache();
+        await clearPendingUsername(domain);
+        return { saved: true, updated: true };
+      }
 
       if (effectiveUsername) {
         // Normal flow: match by domain + username
@@ -727,12 +909,30 @@ async function handleMessage(message, sender) {
           return { saved: true, updated: false };
         }
       } else {
-        // No username means we cannot safely identify which saved login should
-        // be updated. Create a new entry instead of overwriting by domain only.
-        await api.createEntry({ website_url: url, username: '', password });
-        session.clearCache();
-        await clearPendingUsername(domain);
-        return { saved: true, updated: false };
+        if (existing.length === 1) {
+          const entry = existing[0];
+          return {
+            saved: false,
+            reason: 'confirm_update',
+            entryId: entry.id,
+            username: entry.username,
+            message: `Update saved password for ${entry.username || entry.website_domain}?`,
+          };
+        }
+
+        if (existing.length > 1) {
+          return {
+            saved: false,
+            reason: 'missing_username',
+            message: 'Multiple saved logins match this site. Enter or select the account before saving.',
+          };
+        }
+
+        return {
+          saved: false,
+          reason: 'missing_username',
+          message: 'No account username was detected for this password.',
+        };
       }
     }
 

@@ -1,5 +1,6 @@
 import {
   STORAGE_KEY_TOKEN,
+  STORAGE_KEY_TOKEN_SERVER_URL,
   AUTO_LOCK_MINUTES,
   STORAGE_KEY_SESSION_MODE,
   STORAGE_KEY_LAST_ACTIVE,
@@ -16,6 +17,8 @@ export class SessionManager {
     this.api = api;
     this.credentialCache = new Map();
     this._cachedMode = null;
+    this._clearingToken = false;
+    this._tokenGeneration = 0;
     this.updateBadge(false);
   }
 
@@ -37,17 +40,28 @@ export class SessionManager {
 
   async _getAutoLockMinutes() {
     const result = await chrome.storage.local.get(STORAGE_KEY_AUTO_LOCK_MINUTES);
-    return result[STORAGE_KEY_AUTO_LOCK_MINUTES] || AUTO_LOCK_MINUTES;
+    const minutes = Number.parseInt(result[STORAGE_KEY_AUTO_LOCK_MINUTES], 10);
+    if (!Number.isFinite(minutes)) {
+      return AUTO_LOCK_MINUTES;
+    }
+    return Math.max(1, Math.min(1440, minutes));
   }
 
   async saveToken(token) {
     const mode = await this._getMode();
+    const serverUrl = await this.api.getServerUrl();
     if (mode === SESSION_MODE_PERSISTENT || mode === SESSION_MODE_INACTIVITY) {
-      await chrome.storage.local.set({ [STORAGE_KEY_TOKEN]: token });
+      await chrome.storage.local.set({
+        [STORAGE_KEY_TOKEN]: token,
+        [STORAGE_KEY_TOKEN_SERVER_URL]: serverUrl,
+      });
     } else {
-      await chrome.storage.session.set({ [STORAGE_KEY_TOKEN]: token });
+      await chrome.storage.session.set({
+        [STORAGE_KEY_TOKEN]: token,
+        [STORAGE_KEY_TOKEN_SERVER_URL]: serverUrl,
+      });
     }
-    this.api.setToken(token);
+    this.api.setToken(token, serverUrl);
     this.updateBadge(true);
     if (mode === SESSION_MODE_INACTIVITY) {
       await this.resetAutoLock();
@@ -57,16 +71,53 @@ export class SessionManager {
   }
 
   async loadToken() {
+    if (this._clearingToken) {
+      return null;
+    }
+
+    const generation = this._tokenGeneration;
     const mode = await this._getMode();
 
     // Check session storage first (ephemeral — original behavior)
-    let result = await chrome.storage.session.get(STORAGE_KEY_TOKEN);
+    let result = await chrome.storage.session.get([
+      STORAGE_KEY_TOKEN,
+      STORAGE_KEY_TOKEN_SERVER_URL,
+    ]);
     let token = result[STORAGE_KEY_TOKEN] || null;
+    let tokenServerUrl = result[STORAGE_KEY_TOKEN_SERVER_URL] || null;
+    let tokenArea = 'session';
 
     // Fallback: check local storage (persistent or inactivity mode)
     if (!token) {
-      result = await chrome.storage.local.get(STORAGE_KEY_TOKEN);
+      result = await chrome.storage.local.get([
+        STORAGE_KEY_TOKEN,
+        STORAGE_KEY_TOKEN_SERVER_URL,
+      ]);
       token = result[STORAGE_KEY_TOKEN] || null;
+      tokenServerUrl = result[STORAGE_KEY_TOKEN_SERVER_URL] || null;
+      tokenArea = 'local';
+    }
+
+    if (token) {
+      const serverUrl = await this.api.getServerUrl();
+      if (!tokenServerUrl) {
+        const tokenServerRecord = { [STORAGE_KEY_TOKEN_SERVER_URL]: serverUrl };
+        if (tokenArea === 'local') {
+          await chrome.storage.local.set(tokenServerRecord);
+        } else {
+          await chrome.storage.session.set(tokenServerRecord);
+        }
+        tokenServerUrl = serverUrl;
+      }
+
+      if (!this.api.sameServerOrigin(tokenServerUrl, serverUrl)) {
+        await this.clearToken();
+        return null;
+      }
+    }
+
+    if (this._clearingToken || generation !== this._tokenGeneration) {
+      return null;
     }
 
     if (token && mode === SESSION_MODE_INACTIVITY) {
@@ -78,19 +129,32 @@ export class SessionManager {
     }
 
     if (token) {
-      this.api.setToken(token);
+      this.api.setToken(token, tokenServerUrl);
     }
     this.updateBadge(!!token);
     return token;
   }
 
   async clearToken() {
-    await chrome.storage.session.remove(STORAGE_KEY_TOKEN);
-    await chrome.storage.local.remove(STORAGE_KEY_TOKEN);
-    await this.clearAutoLockState();
+    this._clearingToken = true;
+    this._tokenGeneration += 1;
     this.api.clearToken();
     this.credentialCache.clear();
     this.updateBadge(false);
+
+    try {
+      await chrome.storage.session.remove([
+        STORAGE_KEY_TOKEN,
+        STORAGE_KEY_TOKEN_SERVER_URL,
+      ]);
+      await chrome.storage.local.remove([
+        STORAGE_KEY_TOKEN,
+        STORAGE_KEY_TOKEN_SERVER_URL,
+      ]);
+      await this.clearAutoLockState();
+    } finally {
+      this._clearingToken = false;
+    }
   }
 
   async isUnlocked() {

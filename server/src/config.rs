@@ -5,6 +5,7 @@ use std::{net::IpAddr, str::FromStr};
 pub const SERVER_PORT: u16 = 8443;
 pub const SERVER_ADDR: &str = "0.0.0.0";
 pub const CORS_ALLOWED_ORIGINS_ENV: &str = "YURRR_CORS_ALLOWED_ORIGINS";
+pub const THIRD_PARTY_FAVICONS_ENV: &str = "YURRR_ENABLE_THIRD_PARTY_FAVICONS";
 
 // JWT + session timeout defaults
 pub const DEFAULT_JWT_EXPIRY_HOURS: u64 = 24;
@@ -15,6 +16,16 @@ fn env_u64(key: &str) -> Option<u64> {
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|value| *value > 0)
+}
+
+fn env_bool(key: &str) -> Option<bool> {
+    std::env::var(key)
+        .ok()
+        .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })?
 }
 
 pub fn jwt_expiry_hours() -> u64 {
@@ -29,6 +40,11 @@ pub fn inactivity_timeout() -> Duration {
             .unwrap_or(DEFAULT_INACTIVITY_TIMEOUT_MINUTES);
         Duration::from_secs(minutes * 60)
     })
+}
+
+pub fn third_party_favicons_enabled() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| env_bool(THIRD_PARTY_FAVICONS_ENV).unwrap_or(false))
 }
 
 fn configured_cors_origins() -> &'static [String] {

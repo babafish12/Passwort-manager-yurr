@@ -200,6 +200,12 @@ pub async fn logout(
     }))
 }
 
+pub async fn session(_session: AuthenticatedSession) -> Result<Json<MessageResponse>, AppError> {
+    Ok(Json(MessageResponse {
+        message: "Session is valid".into(),
+    }))
+}
+
 pub async fn change_password(
     State(state): State<AppState>,
     mut session: AuthenticatedSession,

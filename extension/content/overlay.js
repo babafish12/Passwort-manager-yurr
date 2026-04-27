@@ -57,15 +57,42 @@ const YurrrOverlay = {
   },
 
   async show(targetField) {
+    if (!targetField) return;
+    if (typeof YurrrDetector !== 'undefined' && !YurrrDetector.isCredentialPageAllowed()) {
+      this.hide();
+      return;
+    }
+
     this.create();
     this.currentTarget = targetField;
 
-    // Position below target field
+    // Position below target field without letting the overlay leave the viewport.
     const rect = targetField.getBoundingClientRect();
-    this.container.style.top = `${rect.bottom + window.scrollY + 4}px`;
-    this.container.style.left = `${rect.left + window.scrollX}px`;
-    this.container.style.width = `${Math.max(rect.width, 300)}px`;
+    const viewportPadding = 8;
+    const availableWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
+    const width = Math.min(Math.max(rect.width, 300), availableWidth);
+    const minLeft = window.scrollX + viewportPadding;
+    const maxLeft = window.scrollX + window.innerWidth - width - viewportPadding;
+    const left = Math.max(minLeft, Math.min(rect.left + window.scrollX, maxLeft));
+
     this.container.style.display = 'block';
+    this.container.style.visibility = 'hidden';
+    this.container.style.left = `${left}px`;
+    this.container.style.width = `${width}px`;
+    const availableHeight = Math.max(180, window.innerHeight - viewportPadding * 2);
+    this.container.style.maxHeight = `${availableHeight}px`;
+
+    const belowTop = rect.bottom + window.scrollY + 4;
+    const overlayHeight = Math.min(this.container.offsetHeight, availableHeight);
+    const aboveTop = rect.top + window.scrollY - overlayHeight - 4;
+    const minTop = window.scrollY + viewportPadding;
+    const maxTop = window.scrollY + window.innerHeight - overlayHeight - viewportPadding;
+    const preferredTop = belowTop + overlayHeight > maxTop + viewportPadding && aboveTop >= minTop
+      ? aboveTop
+      : belowTop;
+    const top = Math.max(minTop, Math.min(preferredTop, maxTop));
+    this.container.style.top = `${top}px`;
+    this.container.style.visibility = '';
 
     await this.generateAndShow(20);
   },
@@ -105,21 +132,57 @@ const YurrrOverlay = {
     nativeSetter.call(target, pw);
     target.dispatchEvent(new Event('input', { bubbles: true }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
+    this.markGeneratedPassword(target, pw);
 
     // Also fill confirm password if present
     const form = target.closest('form');
     if (form) {
       const pwFields = form.querySelectorAll('input[type="password"]');
+      const isPasswordChange = typeof YurrrHeuristics !== 'undefined'
+        && YurrrHeuristics.isPasswordChangeForm(form);
+      const currentPasswordField = isPasswordChange
+        ? YurrrHeuristics.findCurrentPasswordField(form)
+        : null;
+
       for (const field of pwFields) {
-        if (field !== target) {
-          nativeSetter.call(field, pw);
-          field.dispatchEvent(new Event('input', { bubbles: true }));
-          field.dispatchEvent(new Event('change', { bubbles: true }));
+        if (field === target) {
+          continue;
         }
+
+        if (isPasswordChange) {
+          const isCurrentPassword = field === currentPasswordField
+            || YurrrHeuristics.isCurrentPasswordField(field);
+          if (isCurrentPassword || !YurrrHeuristics.isNewPasswordField(field)) {
+            continue;
+          }
+        }
+
+        nativeSetter.call(field, pw);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        this.markGeneratedPassword(field, pw);
       }
     }
 
     this.hide();
+  },
+
+  markGeneratedPassword(field, password) {
+    if (!field || !password) return;
+
+    const store = globalThis.YurrrGeneratedPasswordStore || new WeakMap();
+    globalThis.YurrrGeneratedPasswordStore = store;
+
+    const value = {
+      password,
+      generatedAt: Date.now(),
+    };
+    store.set(field, value);
+
+    const form = field.closest('form');
+    if (form) {
+      store.set(form, value);
+    }
   },
 
   destroy() {

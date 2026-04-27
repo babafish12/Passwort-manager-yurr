@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
 use tracing::warn;
 
+use crate::config;
 use crate::domain;
 use crate::errors::AppError;
 use crate::models::FaviconRow;
@@ -465,6 +466,10 @@ pub async fn ensure_favicon(pool: &SqlitePool, domain: &str) {
     let Some(domain) = domain::normalize_domain(domain) else {
         return;
     };
+
+    if !config::third_party_favicons_enabled() {
+        return;
+    }
 
     if is_negative_cached(&domain).await {
         return;

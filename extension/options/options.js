@@ -3,6 +3,8 @@ const DEFAULT_URL = 'https://localhost:8443';
 const STORAGE_KEY_EMAIL_SUGGESTIONS = 'yurrr_email_suggestions';
 const STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS = 'yurrr_auto_email_suggestions';
 const STORAGE_KEY_AUTO_EMAIL_SELECTED = 'yurrr_auto_email_selected';
+const STORAGE_KEY_ENABLE_FAVICONS = 'yurrr_enable_favicons';
+const DECRYPTED_EXPORT_CONFIRMATION = 'EXPORT DECRYPTED VAULT';
 
 const serverUrlInput = document.getElementById('server-url');
 const testBtn = document.getElementById('test-btn');
@@ -10,6 +12,8 @@ const saveBtn = document.getElementById('save-btn');
 const statusEl = document.getElementById('status');
 const exportVaultBtn = document.getElementById('export-vault-btn');
 const exportStatusEl = document.getElementById('export-status');
+const enableFaviconsEl = document.getElementById('enable-favicons');
+const privacyStatusEl = document.getElementById('privacy-status');
 
 const TOAST_ICONS = {
   success: '<svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m5 12 4 4 10-10" /></svg>',
@@ -63,12 +67,18 @@ function showToast(message, variant = 'success') {
   const toast = document.createElement('div');
   toast.className = 'toast';
   toast.dataset.variant = variant;
-  toast.innerHTML = `
-    <div class="toast-inner">
-      <span>${TOAST_ICONS[variant] || TOAST_ICONS.success}</span>
-      <span>${escapeHtml(message)}</span>
-    </div>
-  `;
+  toast.setAttribute('role', variant === 'error' ? 'alert' : 'status');
+  toast.setAttribute('aria-live', variant === 'error' ? 'assertive' : 'polite');
+  toast.setAttribute('aria-atomic', 'true');
+
+  const inner = document.createElement('div');
+  inner.className = 'toast-inner';
+  const icon = document.createElement('span');
+  icon.innerHTML = TOAST_ICONS[variant] || TOAST_ICONS.success;
+  const text = document.createElement('span');
+  text.textContent = message;
+  inner.append(icon, text);
+  toast.appendChild(inner);
 
   document.body.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add('toast-show'));
@@ -102,6 +112,9 @@ testBtn.addEventListener('click', async () => {
 
   try {
     const resp = await fetch(`${url}/api/v1/auth/status`);
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''}`);
+    }
     const data = await resp.json();
     showStatus(
       `Connected! Server v${data.server_version} - ${data.initialized ? 'Vault initialized' : 'Vault not initialized'}`,
@@ -245,6 +258,22 @@ function showExportStatus(message, type) {
   showToast(message, type === 'error' ? 'error' : 'success');
 }
 
+function showPrivacyStatus(message, type) {
+  privacyStatusEl.textContent = message;
+  privacyStatusEl.className = `status ${type}`;
+  showToast(message, type === 'error' ? 'error' : 'success');
+}
+
+function confirmDecryptedExport() {
+  const message = [
+    'This downloads every vault item as decrypted JSON.',
+    'Anyone with the file can read the passwords and notes.',
+    '',
+    `Type ${DECRYPTED_EXPORT_CONFIRMATION} to continue.`,
+  ].join('\n');
+  return window.prompt(message, '') === DECRYPTED_EXPORT_CONFIRMATION;
+}
+
 function downloadJson(filename, data) {
   const json = JSON.stringify(data ?? null, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
@@ -259,6 +288,12 @@ function downloadJson(filename, data) {
 }
 
 exportVaultBtn.addEventListener('click', async () => {
+  if (!confirmDecryptedExport()) {
+    showExportStatus('Export canceled.', 'error');
+    hideStatusLater(exportStatusEl, 3000);
+    return;
+  }
+
   setButtonLoading(exportVaultBtn, true, 'Exporting...');
 
   try {
@@ -272,6 +307,21 @@ exportVaultBtn.addEventListener('click', async () => {
     setButtonLoading(exportVaultBtn, false);
     hideStatusLater(exportStatusEl, 3000);
   }
+});
+
+chrome.storage.local.get(STORAGE_KEY_ENABLE_FAVICONS, (result) => {
+  enableFaviconsEl.checked = result[STORAGE_KEY_ENABLE_FAVICONS] === true;
+});
+
+enableFaviconsEl.addEventListener('change', () => {
+  const enabled = enableFaviconsEl.checked;
+  chrome.storage.local.set({ [STORAGE_KEY_ENABLE_FAVICONS]: enabled }, () => {
+    const message = enabled
+      ? 'Website favicons enabled for popup display.'
+      : 'Website favicons disabled for popup display.';
+    showPrivacyStatus(message, 'success');
+    hideStatusLater(privacyStatusEl, 3000);
+  });
 });
 
 function showEmailStatus(message, type) {
@@ -306,7 +356,7 @@ function renderAutoEmailSelectionList() {
       const checked = selectedSet.has(email) ? 'checked' : '';
       return `
         <label class="auto-email-item" for="${id}">
-          <span>${escapeHtml(email)}</span>
+          <span class="auto-email-label">${escapeHtml(email)}</span>
           <input id="${id}" type="checkbox" data-email="${escapeHtml(email)}" ${checked}>
         </label>
       `;

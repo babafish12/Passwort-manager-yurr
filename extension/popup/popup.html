@@ -76,10 +76,10 @@
 
     <div id="list-screen" class="screen hidden" data-screen="list">
       <div class="vault-sections">
-        <button id="section-passwords" class="section-chip section-chip-active" type="button">Passwords</button>
-        <button id="section-passkeys" class="section-chip" type="button">Passkeys</button>
-        <button id="section-cards" class="section-chip" type="button">Cards</button>
-        <button id="section-addresses" class="section-chip" type="button">Addresses</button>
+        <button id="section-passwords" class="section-chip section-chip-active" type="button" aria-pressed="true">Passwords</button>
+        <button id="section-passkeys" class="section-chip" type="button" aria-pressed="false">Passkeys</button>
+        <button id="section-cards" class="section-chip" type="button" aria-pressed="false">Cards</button>
+        <button id="section-addresses" class="section-chip" type="button" aria-pressed="false">Addresses</button>
       </div>
       <div class="search-bar">
         <span class="search-icon" aria-hidden="true">
@@ -109,14 +109,14 @@
         <div id="detail-favicon" class="detail-favicon"></div>
         <span id="detail-domain" class="detail-title"></span>
         <div class="detail-actions">
-          <button id="edit-entry-btn" class="icon-btn" title="Edit" type="button">
+          <button id="edit-entry-btn" class="icon-btn" title="Edit" aria-label="Edit entry" type="button">
             <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M14 8a4 4 0 1 1 0 8H7a3 3 0 0 1 0-6h7" />
               <path d="m14 12 7 0" />
               <path d="m18 9 0 6" />
             </svg>
           </button>
-          <button id="delete-entry-btn" class="icon-btn danger" title="Delete" type="button">
+          <button id="delete-entry-btn" class="icon-btn danger" title="Delete" aria-label="Delete entry" type="button">
             <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M4 7h16" />
               <path d="M10 11v6" />
@@ -132,7 +132,7 @@
           <label>Website</label>
           <div class="detail-value">
             <span id="detail-url"></span>
-            <button class="copy-btn" data-copy="detail-url" title="Open" type="button">
+            <button class="copy-btn" data-copy="detail-url" title="Open" aria-label="Open website" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M10 14 20 4" />
                 <path d="M14 4h6v6" />
@@ -147,7 +147,7 @@
           <label>Username</label>
           <div class="detail-value">
             <span id="detail-username"></span>
-            <button class="copy-btn" data-copy="detail-username" title="Copy" type="button">
+            <button class="copy-btn" data-copy="detail-username" title="Copy" aria-label="Copy username" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <rect x="9" y="9" width="11" height="11" rx="2" />
                 <path d="M5 15V6a2 2 0 0 1 2-2h9" />
@@ -159,13 +159,13 @@
           <label>Password</label>
           <div class="detail-value">
             <span id="detail-password" class="password-masked"></span>
-            <button id="toggle-password" class="copy-btn" title="Show" type="button">
+            <button id="toggle-password" class="copy-btn" title="Show" aria-label="Show password" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
                 <circle cx="12" cy="12" r="3" />
               </svg>
             </button>
-            <button class="copy-btn" data-copy="detail-password" title="Copy" type="button">
+            <button class="copy-btn" data-copy="detail-password" title="Copy" aria-label="Copy password" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <rect x="9" y="9" width="11" height="11" rx="2" />
                 <path d="M5 15V6a2 2 0 0 1 2-2h9" />
@@ -204,13 +204,13 @@
           <label>Password</label>
           <div class="password-row">
             <input type="password" id="form-password" placeholder="Password">
-            <button id="form-toggle-pw" class="icon-btn" title="Show" type="button">
+            <button id="form-toggle-pw" class="icon-btn" title="Show" aria-label="Show password" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
                 <circle cx="12" cy="12" r="3" />
               </svg>
             </button>
-            <button id="form-generate" class="icon-btn" title="Generate" type="button">
+            <button id="form-generate" class="icon-btn" title="Generate" aria-label="Generate password" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M14 8a4 4 0 1 1 0 8H7a3 3 0 0 1 0-6h7" />
                 <path d="m14 12 7 0" />

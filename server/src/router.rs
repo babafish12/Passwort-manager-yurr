@@ -43,6 +43,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/setup", post(auth::setup))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
+        .route("/auth/session", get(auth::session))
         .route("/auth/change-password", put(auth::change_password))
         // Entry routes
         .route("/entries", get(entries::list_entries))

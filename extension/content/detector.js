@@ -3,17 +3,30 @@ const YurrrDetector = {
   initialized: false,
   detectedForms: new WeakSet(),
   activePicker: null,
+  activePickerCleanup: null,
   activeEmailPicker: null,
+  activeEmailPickerCleanup: null,
   scanQueued: false,
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
   autoEmailPersistQueue: Promise.resolve(),
   observedEmailFields: new WeakSet(),
+  observedSubmitForms: new WeakSet(),
+  savePromptTimer: null,
+  saveBannerCleanup: null,
+  pendingPromptReadyCleanup: null,
   EMAIL_SUGGESTIONS_KEY: 'yurrr_email_suggestions',
   AUTO_EMAIL_SUGGESTIONS_KEY: 'yurrr_auto_email_suggestions',
   AUTO_EMAIL_SELECTED_KEY: 'yurrr_auto_email_selected',
   EMAIL_SUGGESTIONS_LIST_ID: 'yurrr-email-suggestions-list',
   MAX_AUTO_EMAIL_SUGGESTIONS: 100,
+  GENERATED_PASSWORD_PROMPT_DELAY_MS: 700,
+  GENERATED_PASSWORD_MAX_AGE_MS: 10 * 60 * 1000,
+  POST_SUBMIT_TRANSITION_TIMEOUT_MS: 5000,
+  POST_SUBMIT_TRANSITION_CHECK_MS: 250,
+  POST_SUBMIT_TRANSITION_STABLE_MS: 1000,
+  PENDING_PROMPT_READY_ARM_MS: 5000,
+  SAVE_BANNER_TTL_MS: 5 * 60 * 1000,
 
   init() {
     if (this.initialized) return;
@@ -206,6 +219,32 @@ const YurrrDetector = {
     field.addEventListener('click', openPicker);
   },
 
+  positionFloatingHost(host, targetField, minWidth = 260) {
+    const rect = targetField.getBoundingClientRect();
+    const viewportPadding = 8;
+    const availableWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
+    const width = Math.min(Math.max(minWidth, rect.width), availableWidth);
+    const minLeft = window.scrollX + viewportPadding;
+    const maxLeft = window.scrollX + window.innerWidth - width - viewportPadding;
+    const left = Math.max(minLeft, Math.min(rect.left + window.scrollX, maxLeft));
+    const availableHeight = Math.max(160, window.innerHeight - viewportPadding * 2);
+    const hostHeight = Math.min(host.offsetHeight, availableHeight);
+    const belowTop = rect.bottom + window.scrollY + 4;
+    const aboveTop = rect.top + window.scrollY - hostHeight - 4;
+    const minTop = window.scrollY + viewportPadding;
+    const maxTop = window.scrollY + window.innerHeight - hostHeight - viewportPadding;
+    const preferredTop = belowTop + hostHeight > maxTop + viewportPadding && aboveTop >= minTop
+      ? aboveTop
+      : belowTop;
+    const top = Math.max(minTop, Math.min(preferredTop, maxTop));
+
+    host.style.top = `${top}px`;
+    host.style.left = `${left}px`;
+    host.style.width = `${width}px`;
+    host.style.maxHeight = `${availableHeight}px`;
+    host.style.overflowY = 'auto';
+  },
+
   async showEmailPicker(field) {
     if (!field || !YurrrHeuristics.isLikelyEmailField(field)) return;
     if (!this.isCredentialPageAllowed()) return;
@@ -278,20 +317,39 @@ const YurrrDetector = {
 
     document.body.appendChild(host);
     this.activeEmailPicker = host;
+    this.positionFloatingHost(host, field, 260);
 
-    const rect = field.getBoundingClientRect();
-    host.style.top = `${rect.bottom + window.scrollY + 4}px`;
-    host.style.left = `${rect.left + window.scrollX}px`;
-    host.style.minWidth = `${Math.max(260, rect.width)}px`;
+    let closed = false;
+    let outsideClickTimer = null;
 
-    const closePicker = () => {
+    const outsideClickHandler = (e) => {
+      if (!host.contains(e.target) && e.target !== field) {
+        this.hideEmailPicker();
+      }
+    };
+
+    const escHandler = (e) => {
+      if (e.key === 'Escape') this.hideEmailPicker();
+    };
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      if (outsideClickTimer !== null) {
+        clearTimeout(outsideClickTimer);
+        outsideClickTimer = null;
+      }
+      document.removeEventListener('click', outsideClickHandler);
+      document.removeEventListener('keydown', escHandler);
       if (this.activeEmailPicker === host) {
         this.activeEmailPicker = null;
       }
+      if (this.activeEmailPickerCleanup === cleanup) {
+        this.activeEmailPickerCleanup = null;
+      }
       host.remove();
-      document.removeEventListener('click', outsideClickHandler);
-      document.removeEventListener('keydown', escHandler);
     };
+    this.activeEmailPickerCleanup = cleanup;
 
     shadow.querySelectorAll('.item').forEach((item) => {
       item.addEventListener('mousedown', (e) => {
@@ -300,28 +358,31 @@ const YurrrDetector = {
         const email = suggestions[idx];
         this.fillEmailField(field, email);
         this.rememberUsername(window.location.hostname, window.location.href, email);
-        closePicker();
+        this.hideEmailPicker();
       });
     });
 
-    const outsideClickHandler = (e) => {
-      if (!host.contains(e.target) && e.target !== field) {
-        closePicker();
+    outsideClickTimer = setTimeout(() => {
+      outsideClickTimer = null;
+      if (!closed) {
+        document.addEventListener('click', outsideClickHandler);
       }
-    };
-    setTimeout(() => document.addEventListener('click', outsideClickHandler), 0);
-
-    const escHandler = (e) => {
-      if (e.key === 'Escape') closePicker();
-    };
+    }, 0);
     document.addEventListener('keydown', escHandler);
   },
 
   hideEmailPicker() {
+    if (this.activeEmailPickerCleanup) {
+      const cleanup = this.activeEmailPickerCleanup;
+      this.activeEmailPickerCleanup = null;
+      cleanup();
+      return;
+    }
+
     if (this.activeEmailPicker) {
       this.activeEmailPicker.remove();
-      this.activeEmailPicker = null;
     }
+    this.activeEmailPicker = null;
   },
 
   fillEmailField(field, email) {
@@ -409,6 +470,33 @@ const YurrrDetector = {
     }
   },
 
+  getSubmitPasswordField(form, fallbackField) {
+    if (!form || !YurrrHeuristics.isPasswordChangeForm(form)) {
+      return fallbackField;
+    }
+
+    const currentPasswordField = YurrrHeuristics.findCurrentPasswordField(form);
+    const candidates = YurrrHeuristics.getVisiblePasswordFields(form)
+      .filter((field) => field !== currentPasswordField && String(field.value || '').length > 0);
+
+    return candidates.find((field) => YurrrHeuristics.isNewPasswordField(field))
+      || candidates[0]
+      || fallbackField;
+  },
+
+  attachFormSubmitHandler(form, resolveUsernameField, passwordField) {
+    if (!form || this.observedSubmitForms.has(form)) return;
+    this.observedSubmitForms.add(form);
+
+    form.addEventListener('submit', () => {
+      this.handleFormSubmit(
+        form,
+        resolveUsernameField(),
+        this.getSubmitPasswordField(form, passwordField),
+      );
+    });
+  },
+
   scanForms() {
     const passwordFields = document.querySelectorAll('input[type="password"]');
 
@@ -424,11 +512,42 @@ const YurrrDetector = {
         this.detectedForms.add(initialUsernameField);
       }
 
+      const isPasswordChange = YurrrHeuristics.isPasswordChangeForm(form);
+      if (isPasswordChange) {
+        const currentPasswordField = YurrrHeuristics.findCurrentPasswordField(form);
+        if (pwField === currentPasswordField) {
+          this.tryAutoFill(initialUsernameField, pwField);
+          pwField.addEventListener('focus', () => {
+            this.tryAutoFill(resolveUsernameField(), pwField, true, pwField);
+          });
+        } else {
+          pwField.addEventListener('focus', () => {
+            if (this.isCredentialPageAllowed()) {
+              YurrrOverlay.show(pwField);
+            }
+          });
+        }
+
+        this.attachFormSubmitHandler(form, resolveUsernameField, pwField);
+        pwField.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            this.handleFormSubmit(
+              form,
+              resolveUsernameField(),
+              this.getSubmitPasswordField(form, pwField),
+            );
+          }
+        });
+        continue;
+      }
+
       const isRegistration = YurrrHeuristics.isRegistrationForm(form);
 
       if (isRegistration) {
         pwField.addEventListener('focus', () => {
-          YurrrOverlay.show(pwField);
+          if (this.isCredentialPageAllowed()) {
+            YurrrOverlay.show(pwField);
+          }
         });
 
         const emailField = YurrrHeuristics.findRegistrationEmailField(form, pwField) || initialUsernameField;
@@ -446,15 +565,11 @@ const YurrrDetector = {
         });
       }
 
-      if (form) {
-        form.addEventListener('submit', () => {
-          this.handleFormSubmit(form, resolveUsernameField(), pwField);
-        });
-      }
+      this.attachFormSubmitHandler(form, resolveUsernameField, pwField);
 
       pwField.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-          this.handleFormSubmit(form, resolveUsernameField(), pwField);
+          this.handleFormSubmit(form, resolveUsernameField(), this.getSubmitPasswordField(form, pwField));
         }
       });
     }
@@ -643,19 +758,40 @@ const YurrrDetector = {
 
     document.body.appendChild(host);
     this.activePicker = host;
+    this.positionFloatingHost(host, targetField, 260);
 
-    // Position below target field
-    const rect = targetField.getBoundingClientRect();
-    host.style.top = `${rect.bottom + window.scrollY + 4}px`;
-    host.style.left = `${rect.left + window.scrollX}px`;
-    host.style.minWidth = `${Math.max(260, rect.width)}px`;
+    let closed = false;
+    let outsideClickTimer = null;
 
-    const closePicker = () => {
-      this.hidePicker();
-      if (onClose) onClose();
+    const outsideClickHandler = (e) => {
+      if (!host.contains(e.target) && e.target !== targetField) {
+        this.hidePicker();
+      }
+    };
+
+    const escHandler = (e) => {
+      if (e.key === 'Escape') this.hidePicker();
+    };
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      if (outsideClickTimer !== null) {
+        clearTimeout(outsideClickTimer);
+        outsideClickTimer = null;
+      }
       document.removeEventListener('click', outsideClickHandler);
       document.removeEventListener('keydown', escHandler);
+      if (this.activePicker === host) {
+        this.activePicker = null;
+      }
+      if (this.activePickerCleanup === cleanup) {
+        this.activePickerCleanup = null;
+      }
+      host.remove();
+      if (onClose) onClose();
     };
+    this.activePickerCleanup = cleanup;
 
     // Click handlers for items
     shadow.querySelectorAll('.item').forEach((item) => {
@@ -691,30 +827,34 @@ const YurrrDetector = {
         shadow.querySelectorAll('.item').forEach((el) => el.classList.remove('active'));
         item.classList.add('active');
 
-        setTimeout(() => closePicker(), 150);
+        setTimeout(() => this.hidePicker(), 150);
       });
     });
 
     // Close on outside click (delayed to avoid catching the triggering click)
-    const outsideClickHandler = (e) => {
-      if (!host.contains(e.target) && e.target !== targetField) {
-        closePicker();
+    outsideClickTimer = setTimeout(() => {
+      outsideClickTimer = null;
+      if (!closed) {
+        document.addEventListener('click', outsideClickHandler);
       }
-    };
-    setTimeout(() => document.addEventListener('click', outsideClickHandler), 0);
+    }, 0);
 
     // Close on Escape
-    const escHandler = (e) => {
-      if (e.key === 'Escape') closePicker();
-    };
     document.addEventListener('keydown', escHandler);
   },
 
   hidePicker() {
+    if (this.activePickerCleanup) {
+      const cleanup = this.activePickerCleanup;
+      this.activePickerCleanup = null;
+      cleanup();
+      return;
+    }
+
     if (this.activePicker) {
       this.activePicker.remove();
-      this.activePicker = null;
     }
+    this.activePicker = null;
   },
 
   escapeHtml(str) {
@@ -739,12 +879,121 @@ const YurrrDetector = {
     }
   },
 
+  isYurrrGeneratedPassword(form, passwordField, password) {
+    if (!passwordField || !password) return false;
+
+    const candidates = [passwordField, form].filter(Boolean);
+    const store = globalThis.YurrrGeneratedPasswordStore;
+    if (!store) return false;
+
+    const now = Date.now();
+
+    return candidates.some((el) => {
+      const generated = store.get(el);
+      return (
+        generated?.password === password &&
+        Number.isFinite(generated.generatedAt) &&
+        now - generated.generatedAt <= this.GENERATED_PASSWORD_MAX_AGE_MS
+      );
+    });
+  },
+
+  hasLikelyPostSubmitTransition(startUrl, form, passwordField) {
+    if (window.location.href !== startUrl) return true;
+    if (form && (!form.isConnected || YurrrHeuristics.isHidden(form))) return true;
+    if (passwordField && (!passwordField.isConnected || YurrrHeuristics.isHidden(passwordField))) return true;
+    return false;
+  },
+
+  queueGeneratedPasswordSavePrompt(url, username, password, domain, form, passwordField) {
+    if (this.savePromptTimer) {
+      clearTimeout(this.savePromptTimer);
+    }
+
+    const startedAt = Date.now();
+    let transitionStartedAt = null;
+    const checkForTransition = () => {
+      if (document.visibilityState === 'hidden') {
+        this.savePromptTimer = null;
+        return;
+      }
+
+      if (this.hasLikelyPostSubmitTransition(url, form, passwordField)) {
+        transitionStartedAt ||= Date.now();
+        if (Date.now() - transitionStartedAt >= this.POST_SUBMIT_TRANSITION_STABLE_MS) {
+          this.savePromptTimer = null;
+          this.showSaveBanner(url, username, password, domain);
+          return;
+        }
+      } else {
+        transitionStartedAt = null;
+      }
+
+      if (Date.now() - startedAt >= this.POST_SUBMIT_TRANSITION_TIMEOUT_MS) {
+        this.savePromptTimer = null;
+        return;
+      }
+
+      this.savePromptTimer = setTimeout(checkForTransition, this.POST_SUBMIT_TRANSITION_CHECK_MS);
+    };
+
+    this.savePromptTimer = setTimeout(checkForTransition, this.GENERATED_PASSWORD_PROMPT_DELAY_MS);
+  },
+
+  disarmPendingCredentialsPromptReady() {
+    if (!this.pendingPromptReadyCleanup) return;
+    const cleanup = this.pendingPromptReadyCleanup;
+    this.pendingPromptReadyCleanup = null;
+    cleanup();
+  },
+
+  armPendingCredentialsPromptReady(payload) {
+    this.disarmPendingCredentialsPromptReady();
+
+    let armed = true;
+    let timeoutId = null;
+    const readyPayload = {
+      ...payload,
+      promptReady: true,
+    };
+
+    const cleanup = () => {
+      if (!armed) return;
+      armed = false;
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      window.removeEventListener('pagehide', markReady);
+      window.removeEventListener('beforeunload', markReady);
+      if (this.pendingPromptReadyCleanup === cleanup) {
+        this.pendingPromptReadyCleanup = null;
+      }
+    };
+
+    const markReady = () => {
+      if (!armed) return;
+      cleanup();
+      try {
+        chrome.runtime.sendMessage({ type: 'PENDING_CREDENTIALS', payload: readyPayload });
+      } catch {
+        // Best-effort marker during navigation.
+      }
+    };
+
+    this.pendingPromptReadyCleanup = cleanup;
+    window.addEventListener('pagehide', markReady);
+    window.addEventListener('beforeunload', markReady);
+    timeoutId = setTimeout(cleanup, this.PENDING_PROMPT_READY_ARM_MS);
+  },
+
   async handleFormSubmit(form, usernameField, passwordField) {
     if (!this.isCredentialPageAllowed()) return;
 
     const url = window.location.href;
     const domain = window.location.hostname;
-    const typedUsername = String(usernameField?.value || '').trim();
+    const resolvedUsernameField = usernameField || YurrrHeuristics.findRegistrationEmailField(form, passwordField);
+    const typedUsername = String(resolvedUsernameField?.value || '').trim();
     const password = passwordField?.value;
 
     // Step 1 of multi-step login: remember identifier/email for the upcoming password step.
@@ -755,15 +1004,32 @@ const YurrrDetector = {
       return;
     }
 
-    let username = typedUsername;
-    if (!username) {
-      username = await this.getRememberedUsername(domain);
+    const username = typedUsername;
+    const pendingPayload = {
+      url,
+      domain,
+      pageUrl: url,
+      username,
+      password,
+      promptReady: false,
+    };
+
+    const pendingStore = this.sendRuntimeMessage('PENDING_CREDENTIALS', pendingPayload);
+    this.armPendingCredentialsPromptReady(pendingPayload);
+    try {
+      const response = await pendingStore;
+      if (response?.stored === false) {
+        this.disarmPendingCredentialsPromptReady();
+        return;
+      }
+    } catch {
+      this.disarmPendingCredentialsPromptReady();
+      return;
     }
 
-    chrome.runtime.sendMessage({
-      type: 'PENDING_CREDENTIALS',
-      payload: { url, domain, pageUrl: url, username, password },
-    });
+    if (this.isYurrrGeneratedPassword(form, passwordField, password)) {
+      this.queueGeneratedPasswordSavePrompt(url, username, password, domain, form, passwordField);
+    }
   },
 
   async checkPendingCredentials() {
@@ -779,23 +1045,26 @@ const YurrrDetector = {
 
       if (response.hasPending) {
         const { url, username, password } = response.credentials;
-        this.showSaveBanner(url, username, password);
+        this.showSaveBanner(url, username, password, domain);
       }
     } catch {
       // Silent fail
     }
   },
 
-  showSaveBanner(url, username, password) {
-    const existing = document.getElementById('yurrr-save-banner');
-    if (existing) existing.remove();
+  showSaveBanner(url, username, password, domain = window.location.hostname) {
+    if (this.saveBannerCleanup) {
+      this.saveBannerCleanup(false);
+    } else {
+      const existing = document.getElementById('yurrr-save-banner');
+      if (existing) existing.remove();
+    }
 
-    const domain = window.location.hostname;
     const banner = document.createElement('div');
     banner.id = 'yurrr-save-banner';
     banner.innerHTML = `
       <div class="yurrr-banner-text">
-        <strong>Yurrr</strong> &mdash; Save password for <strong>${domain}</strong>?
+        <strong>Yurrr</strong> &mdash; Save password for <strong>${this.escapeHtml(domain)}</strong>?
       </div>
       <div class="yurrr-banner-actions">
         <button class="yurrr-banner-save">Save</button>
@@ -805,36 +1074,77 @@ const YurrrDetector = {
 
     document.body.appendChild(banner);
 
-    banner.querySelector('.yurrr-banner-save').addEventListener('click', async () => {
+    let autoDismissTimer = null;
+    const dismissBanner = (clearPending = true) => {
+      clearTimeout(autoDismissTimer);
+      if (this.saveBannerCleanup === dismissBanner) {
+        this.saveBannerCleanup = null;
+      }
+      if (clearPending) {
+        chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS' });
+        chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_USERNAME', payload: { domain } });
+      }
+      banner.remove();
+    };
+    this.saveBannerCleanup = dismissBanner;
+
+    const textEl = banner.querySelector('.yurrr-banner-text');
+    const saveBtn = banner.querySelector('.yurrr-banner-save');
+    const saveBtnOriginalLabel = saveBtn.textContent;
+    let confirmUpdateEntryId = null;
+
+    const setBannerMessage = (message, isError = false) => {
+      textEl.innerHTML = `<strong>Yurrr</strong> &mdash; ${this.escapeHtml(message)}`;
+      textEl.dataset.variant = isError ? 'error' : 'info';
+    };
+
+    autoDismissTimer = setTimeout(() => {
+      if (banner.parentNode) {
+        dismissBanner();
+      }
+    }, this.SAVE_BANNER_TTL_MS);
+
+    saveBtn.addEventListener('click', async () => {
+      saveBtn.disabled = true;
+      setBannerMessage('Saving password...');
       try {
-        await this.sendRuntimeMessage('FORM_SUBMITTED', {
+        const response = await this.sendRuntimeMessage('FORM_SUBMITTED', {
           url,
           pageUrl: window.location.href,
           username,
           password,
+          entryId: confirmUpdateEntryId,
+          confirmUpdate: Boolean(confirmUpdateEntryId),
         });
-      } catch {
-        // Silent fail
-      }
 
-      chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS' });
-      chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_USERNAME', payload: { domain } });
-      banner.remove();
+        if (response?.saved) {
+          dismissBanner();
+          return;
+        }
+
+        if (response?.reason === 'confirm_update' && response.entryId) {
+          confirmUpdateEntryId = response.entryId;
+          setBannerMessage(response.message || 'Update the existing saved login?');
+          saveBtn.textContent = 'Update';
+          saveBtn.disabled = false;
+          return;
+        }
+
+        setBannerMessage(response?.message || 'Password was not saved. Unlock Yurrr and try again.', true);
+        saveBtn.textContent = saveBtnOriginalLabel;
+        saveBtn.disabled = false;
+        return;
+      } catch {
+        setBannerMessage('Password was not saved. Unlock Yurrr and try again.', true);
+        saveBtn.textContent = saveBtnOriginalLabel;
+        saveBtn.disabled = false;
+        return;
+      }
     });
 
     banner.querySelector('.yurrr-banner-dismiss').addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS' });
-      chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_USERNAME', payload: { domain } });
-      banner.remove();
+      dismissBanner();
     });
-
-    setTimeout(() => {
-      if (banner.parentNode) {
-        chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS' });
-        chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_USERNAME', payload: { domain } });
-        banner.remove();
-      }
-    }, 10000);
   },
 };
 

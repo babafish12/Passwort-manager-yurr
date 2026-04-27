@@ -3,6 +3,7 @@ export const API_BASE = '/api/v1';
 export const AUTO_LOCK_MINUTES = 15;
 export const STORAGE_KEY_SERVER_URL = 'yurrr_server_url';
 export const STORAGE_KEY_TOKEN = 'yurrr_token';
+export const STORAGE_KEY_TOKEN_SERVER_URL = 'yurrr_token_server_url';
 export const STORAGE_KEY_SESSION_MODE = 'yurrr_session_mode';
 export const STORAGE_KEY_LAST_ACTIVE = 'yurrr_last_active';
 export const STORAGE_KEY_AUTO_LOCK_EXPIRES_AT = 'yurrr_auto_lock_expires_at';

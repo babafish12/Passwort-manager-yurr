@@ -17,20 +17,22 @@ const EntryList = {
     });
   },
 
-  async show() {
+  async show({ animate = true, initialEntries = null } = {}) {
     this.screen.classList.remove('hidden');
-    window.animatePopupScreen?.(this.screen, 'back');
+    if (animate) {
+      window.animatePopupScreen?.(this.screen, 'back');
+    }
     this.searchInput.value = '';
     this.searchInput.focus();
 
     try {
-      this.entries = await sendMessage('LIST_ENTRIES');
+      this.entries = Array.isArray(initialEntries) ? initialEntries : await sendMessage('LIST_ENTRIES');
       this.renderEntries(this.entries);
     } catch (err) {
       if (isSessionLostError(err)) {
         return;
       }
-      this.listEl.innerHTML = `<div class="empty-state">Failed to load: ${err.message}</div>`;
+      this.renderEmptyState(`Failed to load: ${err.message || 'Unknown error'}`);
     }
   },
 
@@ -58,7 +60,7 @@ const EntryList = {
 
   renderEntries(entries) {
     if (!entries.length) {
-      this.listEl.innerHTML = '<div class="empty-state">No passwords saved yet</div>';
+      this.renderEmptyState('No passwords saved yet');
       return;
     }
 
@@ -71,13 +73,13 @@ const EntryList = {
         const icon = window.getPopupIcon ? window.getPopupIcon('trash', 'icon-sm') : '';
         const chevron = window.getPopupIcon ? window.getPopupIcon('chevronRight', 'icon-xs') : '';
         return `
-      <div class="entry-item" data-id="${entryId}">
-        <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}">${initial}</div>
+      <div class="entry-item" data-id="${entryId}" role="button" tabindex="0">
+        <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}">${escapeHtml(initial)}</div>
         <div class="entry-info">
           <div class="entry-domain">${escapeHtml(domain)}</div>
           <div class="entry-username">${username}</div>
         </div>
-        <button class="mini-icon-btn danger" data-entry-delete="${entryId}" title="Delete" type="button">${icon}</button>
+        <button class="mini-icon-btn danger" data-entry-delete="${entryId}" title="Delete" aria-label="Delete password" type="button">${icon}</button>
         <span class="entry-chevron">${chevron}</span>
       </div>
     `;
@@ -86,8 +88,19 @@ const EntryList = {
 
     // Click handlers
     this.listEl.querySelectorAll('.entry-item').forEach((el) => {
-      el.addEventListener('click', () => {
+      const openEntry = () => {
         EntryDetail.show(el.dataset.id);
+      };
+
+      el.addEventListener('click', (event) => {
+        if (event.target.closest('[data-entry-delete]')) return;
+        openEntry();
+      });
+
+      el.addEventListener('keydown', (event) => {
+        if ((event.key !== 'Enter' && event.key !== ' ') || event.target.closest('[data-entry-delete]')) return;
+        event.preventDefault();
+        openEntry();
       });
     });
 
@@ -101,6 +114,13 @@ const EntryList = {
 
     // Load favicons asynchronously
     this.loadFavicons();
+  },
+
+  renderEmptyState(message) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-state';
+    empty.textContent = message;
+    this.listEl.replaceChildren(empty);
   },
 
   async deleteEntry(entryId) {
@@ -132,6 +152,10 @@ const EntryList = {
   },
 
   async loadFavicons() {
+    if (window.areFaviconsEnabled && !(await window.areFaviconsEnabled())) {
+      return;
+    }
+
     const iconEls = this.listEl.querySelectorAll('.entry-icon[data-favicon-domain]');
     const domains = new Set();
     iconEls.forEach((el) => domains.add(el.dataset.faviconDomain));
@@ -146,7 +170,10 @@ const EntryList = {
           this.listEl
             .querySelectorAll(`.entry-icon[data-favicon-domain="${CSS.escape(domain)}"]`)
             .forEach((el) => {
-              el.innerHTML = `<img src="${result.dataUrl}" alt="">`;
+              const img = document.createElement('img');
+              img.src = result.dataUrl;
+              img.alt = '';
+              el.replaceChildren(img);
             });
         }
       } catch {

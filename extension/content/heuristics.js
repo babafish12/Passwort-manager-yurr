@@ -27,18 +27,19 @@ const YurrrHeuristics = {
     const form = passwordField.closest('form');
     const scope = form || document;
     const inputs = Array.from(scope.querySelectorAll(this.inputSelector));
-    const pwIndex = form ? inputs.indexOf(passwordField) : -1;
+    const allInputs = Array.from(scope.querySelectorAll('input'));
+    const pwIndex = allInputs.indexOf(passwordField);
     const candidates = [];
 
-    for (let idx = 0; idx < inputs.length; idx++) {
-      const el = inputs[idx];
+    for (const el of inputs) {
       if (!this.isEligibleInput(el)) continue;
       if (form && el.closest('form') !== form) continue;
       if (el === passwordField) continue;
 
       let score = this.scoreUsernameCandidate(el);
+      const idx = allInputs.indexOf(el);
 
-      if (pwIndex !== -1) {
+      if (pwIndex !== -1 && idx !== -1) {
         if (idx < pwIndex) {
           score += 4;
           if (idx === pwIndex - 1) score += 2;
@@ -157,16 +158,64 @@ const YurrrHeuristics = {
     return true;
   },
 
+  getVisiblePasswordFields(form) {
+    if (!form) return [];
+    return Array.from(form.querySelectorAll('input[type="password"]'))
+      .filter((field) => !this.isHidden(field) && !field.disabled && !field.readOnly);
+  },
+
+  isCurrentPasswordField(field) {
+    if (!field || (field.type || '').toLowerCase() !== 'password') return false;
+
+    const autocomplete = (field.autocomplete || '').toLowerCase();
+    if (autocomplete.split(/\s+/).includes('current-password')) return true;
+
+    const meta = this.getFieldMeta(field);
+    return (
+      /(current|old|existing)\s*(password|passcode|pass|pwd)/i.test(meta) ||
+      /(password|passcode|pass|pwd)\s*(current|old|existing)/i.test(meta)
+    );
+  },
+
+  isNewPasswordField(field) {
+    if (!field || (field.type || '').toLowerCase() !== 'password') return false;
+
+    const autocomplete = (field.autocomplete || '').toLowerCase();
+    if (autocomplete.split(/\s+/).includes('new-password')) return true;
+
+    const meta = this.getFieldMeta(field);
+    return (
+      /(new|confirm|confirmation|repeat|retype|verify)\s*(password|passcode|pass|pwd)/i.test(meta) ||
+      /(password|passcode|pass|pwd)\s*(new|confirm|confirmation|repeat|retype|verify)/i.test(meta)
+    );
+  },
+
+  findCurrentPasswordField(form) {
+    return this.getVisiblePasswordFields(form).find((field) => this.isCurrentPasswordField(field)) || null;
+  },
+
+  isPasswordChangeForm(form) {
+    const passwordFields = this.getVisiblePasswordFields(form);
+    if (passwordFields.length < 2) return false;
+
+    const hasCurrentPassword = passwordFields.some((field) => this.isCurrentPasswordField(field));
+    if (!hasCurrentPassword) return false;
+
+    const hasNewPassword = passwordFields.some((field) => this.isNewPasswordField(field));
+    return hasNewPassword || passwordFields.length >= 3;
+  },
+
   // Detect if a form is a registration form vs login form
   isRegistrationForm(form) {
     if (!form) return false;
+    if (this.isPasswordChangeForm(form)) return false;
 
     // Check for multiple password fields
-    const passwordFields = form.querySelectorAll('input[type="password"]');
+    const passwordFields = this.getVisiblePasswordFields(form);
     if (passwordFields.length >= 2) return true;
 
     // Check autocomplete="new-password"
-    const newPw = form.querySelector('input[autocomplete="new-password"]');
+    const newPw = passwordFields.find((field) => this.isNewPasswordField(field));
     if (newPw) return true;
 
     // Check form action URL
