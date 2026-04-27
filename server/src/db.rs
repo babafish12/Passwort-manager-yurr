@@ -88,6 +88,61 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         }
     }
 
+    ensure_vault_items_supports_passkeys(pool).await?;
+
     info!("Database migrations applied");
+    Ok(())
+}
+
+async fn ensure_vault_items_supports_passkeys(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let table_sql: Option<String> = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vault_items'",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(table_sql) = table_sql else {
+        return Ok(());
+    };
+
+    if table_sql.contains("'passkey'") || table_sql.contains("\"passkey\"") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DROP TABLE IF EXISTS vault_items_new")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE vault_items_new (
+            id                  TEXT PRIMARY KEY,
+            item_type           TEXT NOT NULL CHECK (item_type IN ('card', 'address', 'passkey')),
+            payload_encrypted   TEXT NOT NULL,
+            created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO vault_items_new (id, item_type, payload_encrypted, created_at, updated_at)
+         SELECT id, item_type, payload_encrypted, created_at, updated_at
+         FROM vault_items
+         WHERE item_type IN ('card', 'address', 'passkey')",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE vault_items")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("ALTER TABLE vault_items_new RENAME TO vault_items")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_vault_items_type ON vault_items(item_type)")
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await?;
     Ok(())
 }

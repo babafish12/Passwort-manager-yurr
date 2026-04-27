@@ -200,7 +200,7 @@ function normalizeDomain(value) {
 
 function normalizeVaultItemType(value) {
   const itemType = String(value || '').trim().toLowerCase();
-  if (itemType !== 'card' && itemType !== 'address') {
+  if (itemType !== 'card' && itemType !== 'address' && itemType !== 'passkey') {
     throw new Error('Invalid vault item type');
   }
   return itemType;

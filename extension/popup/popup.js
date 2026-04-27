@@ -98,6 +98,14 @@ const ICONS = {
     '<path d="m4.5 11.5 7.5-6 7.5 6" />',
     '<path d="M7.5 10.5v8h9v-8" />',
   ],
+  fingerprint: [
+    '<path d="M6.4 11.5a5.6 5.6 0 0 1 11.2 0" />',
+    '<path d="M8.6 14.5c.2-3.3 1.4-5 3.4-5s3.2 1.7 3.4 5" />',
+    '<path d="M12 13.2c0 2.7-.8 5-2.5 6.8" />',
+    '<path d="M14.6 19.5c.8-1.6 1.2-3.6 1.2-6.1" />',
+    '<path d="M4.8 15.8c.3-5.9 2.7-8.9 7.2-8.9 2 0 3.7.6 4.9 1.9" />',
+    '<path d="M19.2 15.6c.2-2.2-.1-4-1-5.4" />',
+  ],
 };
 
 function getPopupIcon(name, className = 'icon') {
@@ -297,6 +305,7 @@ const VaultSections = {
   LOCAL_STORAGE_KEYS: {
     card: 'yurrr_cards',
     address: 'yurrr_addresses',
+    passkey: 'yurrr_passkeys',
   },
   migrationComplete: {},
   migrationPromises: {},
@@ -310,10 +319,12 @@ const VaultSections = {
     this.addBtn = document.getElementById('add-btn');
 
     this.passwordsBtn = document.getElementById('section-passwords');
+    this.passkeysBtn = document.getElementById('section-passkeys');
     this.cardsBtn = document.getElementById('section-cards');
     this.addressesBtn = document.getElementById('section-addresses');
 
     this.passwordsBtn.addEventListener('click', () => this.setActiveTab('passwords'));
+    this.passkeysBtn.addEventListener('click', () => this.setActiveTab('passkeys'));
     this.cardsBtn.addEventListener('click', () => this.setActiveTab('cards'));
     this.addressesBtn.addEventListener('click', () => this.setActiveTab('addresses'));
   },
@@ -323,10 +334,11 @@ const VaultSections = {
   },
 
   updateChipState() {
-    const chips = [this.passwordsBtn, this.cardsBtn, this.addressesBtn];
+    const chips = [this.passwordsBtn, this.passkeysBtn, this.cardsBtn, this.addressesBtn];
     chips.forEach((chip) => chip.classList.remove('section-chip-active'));
 
     if (this.activeTab === 'passwords') this.passwordsBtn.classList.add('section-chip-active');
+    if (this.activeTab === 'passkeys') this.passkeysBtn.classList.add('section-chip-active');
     if (this.activeTab === 'cards') this.cardsBtn.classList.add('section-chip-active');
     if (this.activeTab === 'addresses') this.addressesBtn.classList.add('section-chip-active');
   },
@@ -349,9 +361,13 @@ const VaultSections = {
     }
 
     this.searchInput.value = '';
-    this.addBtn.title = tab === 'cards' ? 'Add card' : 'Add address';
+    this.addBtn.title = tab === 'cards' ? 'Add card' : tab === 'passkeys' ? 'Add passkey' : 'Add address';
     this.addBtn.setAttribute('aria-label', this.addBtn.title);
-    this.searchInput.placeholder = tab === 'cards' ? 'Search cards...' : 'Search addresses...';
+    this.searchInput.placeholder = tab === 'cards'
+      ? 'Search cards...'
+      : tab === 'passkeys'
+        ? 'Search passkeys...'
+        : 'Search addresses...';
     await this.renderCurrentTab();
   },
 
@@ -360,6 +376,13 @@ const VaultSections = {
 
     if (this.activeTab === 'cards') {
       this.addCard().catch((err) => {
+        showToast(`Error: ${err.message}`, 'error');
+      });
+      return true;
+    }
+
+    if (this.activeTab === 'passkeys') {
+      this.addPasskey().catch((err) => {
         showToast(`Error: ${err.message}`, 'error');
       });
       return true;
@@ -426,8 +449,26 @@ const VaultSections = {
     };
   },
 
+  toPasskeyPayload(value) {
+    const base = this.stripEntityMetadata(value);
+    const websiteUrl = String(base.website_url || '').trim();
+    return {
+      ...base,
+      label: String(base.label || '').trim(),
+      website_url: websiteUrl,
+      rp_id: this.normalizeRpId(base.rp_id, websiteUrl),
+      user_name: String(base.user_name || '').trim(),
+      display_name: String(base.display_name || '').trim(),
+      credential_id: String(base.credential_id || '').trim(),
+      public_key: String(base.public_key || '').trim(),
+      notes: String(base.notes || '').trim(),
+    };
+  },
+
   toVaultPayload(itemType, value) {
-    return itemType === 'card' ? this.toCardPayload(value) : this.toAddressPayload(value);
+    if (itemType === 'card') return this.toCardPayload(value);
+    if (itemType === 'passkey') return this.toPasskeyPayload(value);
+    return this.toAddressPayload(value);
   },
 
   mapVaultItem(item, itemType) {
@@ -505,9 +546,7 @@ const VaultSections = {
       this.migrationComplete[itemType] = true;
 
       if (migratedCount > 0) {
-        const label = itemType === 'card'
-          ? (migratedCount === 1 ? 'card' : 'cards')
-          : (migratedCount === 1 ? 'address' : 'addresses');
+        const label = this.getItemTypeLabel(itemType, migratedCount);
         showToast(`Migrated ${migratedCount} ${label} to vault`);
       }
     })();
@@ -550,6 +589,21 @@ const VaultSections = {
   renderLoadError(label, err) {
     this.listEl.innerHTML = `<div class="empty-state">Could not load ${escapeHtml(label)}</div>`;
     showToast(`Error: ${err.message}`, 'error');
+  },
+
+  getItemTypeLabel(itemType, count = 2) {
+    const singular = {
+      card: 'card',
+      address: 'address',
+      passkey: 'passkey',
+    }[itemType] || 'item';
+    const plural = {
+      card: 'cards',
+      address: 'addresses',
+      passkey: 'passkeys',
+    }[itemType] || 'items';
+
+    return count === 1 ? singular : plural;
   },
 
   normalizeCardNumber(value) {
@@ -607,6 +661,22 @@ const VaultSections = {
     }
   },
 
+  normalizeRpId(rpId, websiteUrl = '') {
+    const explicit = String(rpId || '').trim().toLowerCase();
+    if (explicit) return explicit;
+
+    try {
+      const parsed = new URL(websiteUrl);
+      return parsed.hostname.toLowerCase();
+    } catch {
+      return '';
+    }
+  },
+
+  formatPasskeyLabel(passkey) {
+    return passkey.label || passkey.rp_id || 'Passkey';
+  },
+
   formatBrand(brand) {
     const map = {
       visa: 'Visa',
@@ -626,6 +696,10 @@ const VaultSections = {
   },
 
   async renderCurrentTab() {
+    if (this.activeTab === 'passkeys') {
+      await this.renderPasskeys();
+      return;
+    }
     if (this.activeTab === 'cards') {
       await this.renderCards();
       return;
@@ -633,6 +707,68 @@ const VaultSections = {
     if (this.activeTab === 'addresses') {
       await this.renderAddresses();
     }
+  },
+
+  async renderPasskeys() {
+    let passkeys;
+    try {
+      passkeys = await this.listVaultEntities('passkey');
+    } catch (err) {
+      this.renderLoadError('passkeys', err);
+      return;
+    }
+
+    const query = this.searchInput.value.trim().toLowerCase();
+    const filtered = !query
+      ? passkeys
+      : passkeys.filter((passkey) => {
+          const text = `${passkey.label || ''} ${passkey.rp_id || ''} ${passkey.website_url || ''} ${passkey.user_name || ''} ${passkey.display_name || ''}`.toLowerCase();
+          return text.includes(query);
+        });
+
+    if (!filtered.length) {
+      this.listEl.innerHTML = '<div class="empty-state">No passkeys saved yet</div>';
+      return;
+    }
+
+    this.listEl.innerHTML = filtered
+      .map(
+        (passkey) => `
+      <div class="entry-item" data-passkey-id="${escapeHtml(passkey.id)}">
+        <div class="entry-icon">${getPopupIcon('fingerprint', 'icon-sm')}</div>
+        <div class="entry-info">
+          <div class="entry-domain">${escapeHtml(this.formatPasskeyLabel(passkey))}</div>
+          <div class="entry-username">${escapeHtml(passkey.user_name || passkey.display_name || 'No account')} • ${escapeHtml(passkey.rp_id || 'No RP ID')}</div>
+        </div>
+        <button class="mini-icon-btn danger" data-passkey-delete="${escapeHtml(passkey.id)}" title="Delete" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
+        <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+      </div>
+    `
+      )
+      .join('');
+
+    this.listEl.querySelectorAll('[data-passkey-id]').forEach((el) => {
+      el.addEventListener('click', async (event) => {
+        const deleteBtn = event.target.closest('[data-passkey-delete]');
+        if (deleteBtn) return;
+        try {
+          await this.editPasskey(el.dataset.passkeyId);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
+      });
+    });
+
+    this.listEl.querySelectorAll('[data-passkey-delete]').forEach((btn) => {
+      btn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        try {
+          await this.deletePasskey(btn.dataset.passkeyDelete);
+        } catch (err) {
+          showToast(`Error: ${err.message}`, 'error');
+        }
+      });
+    });
   },
 
   async renderCards() {
@@ -795,6 +931,88 @@ const VaultSections = {
     await this.createVaultEntity('card', payload);
     await this.renderCards();
     showToast('Card saved');
+  },
+
+  async addPasskey() {
+    const formData = await this.showEntityForm({
+      title: 'Add Passkey',
+      submitLabel: 'Save Passkey',
+      fields: [
+        { name: 'label', label: 'Label', placeholder: 'GitHub personal' },
+        { name: 'website_url', label: 'Website URL', placeholder: 'https://example.com' },
+        { name: 'rp_id', label: 'Relying Party ID', required: true, placeholder: 'example.com' },
+        { name: 'user_name', label: 'Account / Email', required: true },
+        { name: 'display_name', label: 'Display Name' },
+        { name: 'credential_id', label: 'Credential ID', required: true },
+        { name: 'public_key', label: 'Public Key' },
+        { name: 'notes', label: 'Notes' },
+      ],
+    });
+
+    if (!formData) return;
+
+    const payload = this.toPasskeyPayload(formData);
+    if (!payload.rp_id || !payload.user_name || !payload.credential_id) {
+      showToast('RP ID, account, and credential ID are required', 'error');
+      return;
+    }
+
+    await this.createVaultEntity('passkey', payload);
+    await this.renderPasskeys();
+    showToast('Passkey saved');
+  },
+
+  async editPasskey(passkeyId) {
+    const existing = await this.getVaultEntity('passkey', passkeyId);
+    if (!existing) return;
+
+    const formData = await this.showEntityForm({
+      title: 'Edit Passkey',
+      submitLabel: 'Update Passkey',
+      fields: [
+        { name: 'label', label: 'Label', value: existing.label || '' },
+        { name: 'website_url', label: 'Website URL', value: existing.website_url || '' },
+        { name: 'rp_id', label: 'Relying Party ID', required: true, value: existing.rp_id || '' },
+        { name: 'user_name', label: 'Account / Email', required: true, value: existing.user_name || '' },
+        { name: 'display_name', label: 'Display Name', value: existing.display_name || '' },
+        { name: 'credential_id', label: 'Credential ID', required: true, value: existing.credential_id || '' },
+        { name: 'public_key', label: 'Public Key', value: existing.public_key || '' },
+        { name: 'notes', label: 'Notes', value: existing.notes || '' },
+      ],
+    });
+
+    if (!formData) return;
+
+    const payload = this.toPasskeyPayload({ ...existing, ...formData });
+    if (!payload.rp_id || !payload.user_name || !payload.credential_id) {
+      showToast('RP ID, account, and credential ID are required', 'error');
+      return;
+    }
+
+    await this.updateVaultEntity(passkeyId, payload);
+    await this.renderPasskeys();
+    showToast('Passkey updated');
+  },
+
+  async deletePasskey(passkeyId) {
+    const existing = await this.getVaultEntity('passkey', passkeyId);
+    if (!existing) return;
+
+    const passkeyLabel = this.formatPasskeyLabel(existing);
+    const shouldDelete = await showConfirmDialog({
+      title: 'Delete Passkey',
+      message: `Delete "${truncateText(passkeyLabel)}"? This action cannot be undone.`,
+      confirmText: 'Delete Passkey',
+      cancelText: 'Cancel',
+      confirmIcon: 'trash',
+      destructive: true,
+    });
+
+    if (!shouldDelete) return;
+
+    await this.deleteVaultEntity(passkeyId);
+    await this.renderPasskeys();
+    showToast(`Deleted ${truncateText(passkeyLabel)}`);
   },
 
   async editCard(cardId) {

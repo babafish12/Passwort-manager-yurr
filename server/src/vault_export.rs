@@ -9,7 +9,8 @@ use crate::session::AuthenticatedSession;
 use crate::vault_items;
 use crate::AppState;
 
-const EXPORT_VERSION: u32 = 1;
+const MIN_SUPPORTED_IMPORT_VERSION: u32 = 1;
+const EXPORT_VERSION: u32 = 2;
 
 fn non_empty(value: &str) -> Option<&str> {
     let trimmed = value.trim();
@@ -102,7 +103,7 @@ pub async fn import_vault(
     session: AuthenticatedSession,
     Json(req): Json<VaultExportDocument>,
 ) -> Result<Json<VaultImportResponse>, AppError> {
-    if req.version != EXPORT_VERSION {
+    if req.version < MIN_SUPPORTED_IMPORT_VERSION || req.version > EXPORT_VERSION {
         return Err(AppError::BadRequest(format!(
             "Unsupported vault export version {}",
             req.version
@@ -180,6 +181,11 @@ pub async fn import_vault(
 
     for item in req.vault_items {
         if let Err(err) = vault_items::validate_item_type(&item.item_type) {
+            result.failed += 1;
+            result.errors.push(format!("{}: {err}", item.id));
+            continue;
+        }
+        if let Err(err) = vault_items::validate_vault_item_payload(&item.item_type, &item.payload) {
             result.failed += 1;
             result.errors.push(format!("{}: {err}", item.id));
             continue;

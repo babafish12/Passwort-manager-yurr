@@ -1,6 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::crypto;
 use crate::errors::AppError;
@@ -16,11 +17,40 @@ pub struct ListVaultItemsQuery {
 
 pub fn validate_item_type(item_type: &str) -> Result<(), AppError> {
     match item_type {
-        "card" | "address" => Ok(()),
+        "card" | "address" | "passkey" => Ok(()),
         _ => Err(AppError::BadRequest(
-            "item_type must be either 'card' or 'address'".into(),
+            "item_type must be 'card', 'address', or 'passkey'".into(),
         )),
     }
+}
+
+fn non_empty_payload_string<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+pub fn validate_vault_item_payload(item_type: &str, payload: &Value) -> Result<(), AppError> {
+    validate_item_type(item_type)?;
+
+    if item_type != "passkey" {
+        return Ok(());
+    }
+
+    let required = ["rp_id", "user_name", "credential_id"];
+    let missing = required
+        .iter()
+        .find(|key| non_empty_payload_string(payload, key).is_none());
+
+    if let Some(key) = missing {
+        return Err(AppError::BadRequest(format!(
+            "passkey payload requires non-empty {key}"
+        )));
+    }
+
+    Ok(())
 }
 
 pub fn decrypt_vault_item(
@@ -91,6 +121,7 @@ pub async fn create_vault_item(
     Json(req): Json<CreateVaultItemRequest>,
 ) -> Result<(axum::http::StatusCode, Json<VaultItemDetail>), AppError> {
     validate_item_type(&req.item_type)?;
+    validate_vault_item_payload(&req.item_type, &req.payload)?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let payload_json = serde_json::to_string(&req.payload)
@@ -138,6 +169,9 @@ pub async fn update_vault_item(
     Path(id): Path<String>,
     Json(req): Json<UpdateVaultItemRequest>,
 ) -> Result<Json<VaultItemDetail>, AppError> {
+    let existing = fetch_item(&state, &id).await?;
+    validate_vault_item_payload(&existing.item_type, &req.payload)?;
+
     let payload_json = serde_json::to_string(&req.payload)
         .map_err(|e| AppError::Internal(format!("Encode vault item JSON failed: {e}")))?;
     let payload_encrypted = crypto::encrypt(&payload_json, &session.encryption_key)
@@ -188,4 +222,50 @@ pub async fn delete_vault_item(
     Ok(Json(MessageResponse {
         message: "Vault item deleted".into(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_item_type, validate_vault_item_payload};
+    use serde_json::json;
+
+    #[test]
+    fn accepts_supported_vault_item_types() {
+        assert!(validate_item_type("card").is_ok());
+        assert!(validate_item_type("address").is_ok());
+        assert!(validate_item_type("passkey").is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_vault_item_types() {
+        assert!(validate_item_type("password").is_err());
+        assert!(validate_item_type("").is_err());
+    }
+
+    #[test]
+    fn validates_required_passkey_payload_fields() {
+        let valid = json!({
+            "rp_id": "example.com",
+            "user_name": "user@example.com",
+            "credential_id": "credential-id"
+        });
+
+        assert!(validate_vault_item_payload("passkey", &valid).is_ok());
+        assert!(validate_vault_item_payload("passkey", &json!({})).is_err());
+        assert!(validate_vault_item_payload(
+            "passkey",
+            &json!({
+                "rp_id": "example.com",
+                "user_name": "user@example.com",
+                "credential_id": " "
+            })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn keeps_existing_generic_payload_behavior_for_other_vault_items() {
+        assert!(validate_vault_item_payload("card", &json!({})).is_ok());
+        assert!(validate_vault_item_payload("address", &json!({})).is_ok());
+    }
 }

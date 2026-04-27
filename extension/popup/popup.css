@@ -811,6 +811,8 @@ textarea {
 .entity-modal-card {
   width: 100%;
   max-width: 340px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
