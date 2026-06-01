@@ -18,3 +18,10 @@ export const STORAGE_KEY_ADDRESSES = 'yurrr_addresses';
 export const SESSION_MODE_EPHEMERAL = 'ephemeral';
 export const SESSION_MODE_PERSISTENT = 'persistent';
 export const SESSION_MODE_INACTIVITY = 'inactivity';
+export const SESSION_MODE_NEVER = 'never';
+export const SESSION_MODES = [
+  SESSION_MODE_EPHEMERAL,
+  SESSION_MODE_PERSISTENT,
+  SESSION_MODE_INACTIVITY,
+  SESSION_MODE_NEVER,
+];

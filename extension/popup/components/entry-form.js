@@ -61,12 +61,24 @@ const EntryForm = {
   },
 
   cancel() {
+    const editingId = this.editingId;
     this.screen.classList.add('hidden');
-    if (this.editingId) {
-      EntryDetail.show(this.editingId);
+    this.clearSensitiveFields();
+    if (editingId) {
+      EntryDetail.show(editingId);
     } else {
       EntryList.show();
     }
+  },
+
+  clearSensitiveFields() {
+    this.editingId = null;
+    this.urlInput.value = '';
+    this.usernameInput.value = '';
+    this.passwordInput.value = '';
+    this.notesInput.value = '';
+    this.passwordInput.type = 'password';
+    PasswordGenerator.updateStrength('');
   },
 
   togglePassword() {
@@ -125,6 +137,7 @@ const EntryForm = {
       }
 
       this.screen.classList.add('hidden');
+      this.clearSensitiveFields();
       EntryList.show();
     } catch (err) {
       if (isSessionLostError(err)) return;

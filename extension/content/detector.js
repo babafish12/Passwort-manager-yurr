@@ -20,6 +20,7 @@ const YurrrDetector = {
   AUTO_EMAIL_SELECTED_KEY: 'yurrr_auto_email_selected',
   EMAIL_SUGGESTIONS_LIST_ID: 'yurrr-email-suggestions-list',
   MAX_AUTO_EMAIL_SUGGESTIONS: 100,
+  MAX_VISIBLE_EMAIL_SUGGESTIONS: 8,
   GENERATED_PASSWORD_PROMPT_DELAY_MS: 700,
   GENERATED_PASSWORD_MAX_AGE_MS: 10 * 60 * 1000,
   POST_SUBMIT_TRANSITION_TIMEOUT_MS: 5000,
@@ -99,7 +100,8 @@ const YurrrDetector = {
       const result = await this.sendRuntimeMessage('GET_EMAIL_SUGGESTIONS', {
         pageUrl: window.location.href,
       });
-      const combined = this.parseEmailSuggestions(result?.emails);
+      const combined = this.parseEmailSuggestions(result?.emails)
+        .slice(0, this.MAX_VISIBLE_EMAIL_SUGGESTIONS);
       this.emailSuggestionsCache = combined;
       this.emailSuggestionsCacheAt = now;
       return combined;
@@ -249,7 +251,12 @@ const YurrrDetector = {
     if (!field || !YurrrHeuristics.isLikelyEmailField(field)) return;
     if (!this.isCredentialPageAllowed()) return;
 
-    const suggestions = await this.loadEmailSuggestions();
+    const suggestions = await this.loadEmailSuggestions(true);
+    if (!field.isConnected || document.activeElement !== field) {
+      this.hideEmailPicker();
+      return;
+    }
+
     if (!suggestions.length) {
       this.hideEmailPicker();
       return;
@@ -488,7 +495,8 @@ const YurrrDetector = {
     if (!form || this.observedSubmitForms.has(form)) return;
     this.observedSubmitForms.add(form);
 
-    form.addEventListener('submit', () => {
+    form.addEventListener('submit', (e) => {
+      if (!e.isTrusted) return;
       this.handleFormSubmit(
         form,
         resolveUsernameField(),
@@ -530,6 +538,7 @@ const YurrrDetector = {
 
         this.attachFormSubmitHandler(form, resolveUsernameField, pwField);
         pwField.addEventListener('keydown', (e) => {
+          if (!e.isTrusted) return;
           if (e.key === 'Enter') {
             this.handleFormSubmit(
               form,
@@ -568,6 +577,7 @@ const YurrrDetector = {
       this.attachFormSubmitHandler(form, resolveUsernameField, pwField);
 
       pwField.addEventListener('keydown', (e) => {
+        if (!e.isTrusted) return;
         if (e.key === 'Enter') {
           this.handleFormSubmit(form, resolveUsernameField(), this.getSubmitPasswordField(form, pwField));
         }
@@ -586,12 +596,14 @@ const YurrrDetector = {
 
       const form = unField.closest('form');
       if (form) {
-        form.addEventListener('submit', () => {
+        form.addEventListener('submit', (e) => {
+          if (!e.isTrusted) return;
           this.handleFormSubmit(form, unField, null);
         });
       }
 
       unField.addEventListener('keydown', (e) => {
+        if (!e.isTrusted) return;
         if (e.key === 'Enter') {
           this.handleFormSubmit(form, unField, null);
         }
@@ -627,7 +639,7 @@ const YurrrDetector = {
       // Attach picker to fields — opens on focus/click
       this.attachPicker(passwordField, usernameField, passwordField, creds, preferredUsername);
       this.attachPicker(usernameField, usernameField, passwordField, creds, preferredUsername);
-      if (openOnReady && pickerTarget) {
+      if (openOnReady && pickerTarget?.isConnected && document.activeElement === pickerTarget) {
         this.showPicker(pickerTarget, usernameField, passwordField, creds, preferredUsername);
       }
     } catch {
@@ -1075,11 +1087,13 @@ const YurrrDetector = {
     document.body.appendChild(banner);
 
     let autoDismissTimer = null;
+    let pendingPassword = password;
     const dismissBanner = (clearPending = true) => {
       clearTimeout(autoDismissTimer);
       if (this.saveBannerCleanup === dismissBanner) {
         this.saveBannerCleanup = null;
       }
+      pendingPassword = '';
       if (clearPending) {
         chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS' });
         chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_USERNAME', payload: { domain } });
@@ -1104,7 +1118,8 @@ const YurrrDetector = {
       }
     }, this.SAVE_BANNER_TTL_MS);
 
-    saveBtn.addEventListener('click', async () => {
+    saveBtn.addEventListener('click', async (e) => {
+      if (!e.isTrusted) return;
       saveBtn.disabled = true;
       setBannerMessage('Saving password...');
       try {
@@ -1112,12 +1127,14 @@ const YurrrDetector = {
           url,
           pageUrl: window.location.href,
           username,
-          password,
+          password: pendingPassword,
           entryId: confirmUpdateEntryId,
           confirmUpdate: Boolean(confirmUpdateEntryId),
         });
 
         if (response?.saved) {
+          this.emailSuggestionsCache = null;
+          this.emailSuggestionsCacheAt = 0;
           dismissBanner();
           return;
         }
@@ -1142,7 +1159,8 @@ const YurrrDetector = {
       }
     });
 
-    banner.querySelector('.yurrr-banner-dismiss').addEventListener('click', () => {
+    banner.querySelector('.yurrr-banner-dismiss').addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
       dismissBanner();
     });
   },

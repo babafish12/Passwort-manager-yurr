@@ -28,8 +28,49 @@ export class VaultAPI {
   async getServerUrl() {
     if (this.serverUrl) return this.serverUrl;
     const result = await chrome.storage.local.get(STORAGE_KEY_SERVER_URL);
-    this.serverUrl = result[STORAGE_KEY_SERVER_URL] || DEFAULT_SERVER_URL;
+    this.serverUrl = this.normalizeServerUrl(result[STORAGE_KEY_SERVER_URL] || DEFAULT_SERVER_URL);
     return this.serverUrl;
+  }
+
+  normalizeServerUrl(value) {
+    let url;
+    try {
+      url = new URL(String(value || '').trim());
+    } catch {
+      throw this.createError('Invalid server URL. Use an HTTPS URL.', 'CONFIG_ERROR');
+    }
+
+    if (url.username || url.password) {
+      throw this.createError('Invalid server URL. Credentials in URLs are not allowed.', 'CONFIG_ERROR');
+    }
+
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw this.createError('Invalid server URL. Use HTTPS.', 'CONFIG_ERROR');
+    }
+
+    if (url.protocol === 'http:' && !this.isLoopbackHost(url.hostname)) {
+      throw this.createError('Refusing to send secrets to a non-local HTTP server URL.', 'CONFIG_ERROR');
+    }
+
+    url.hash = '';
+    url.search = '';
+    return url.href.replace(/\/+$/, '');
+  }
+
+  isLoopbackHost(hostname) {
+    const host = String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') {
+      return true;
+    }
+
+    const parts = host.split('.');
+    if (parts.length !== 4) return false;
+    const nums = parts.map((part) => Number.parseInt(part, 10));
+    if (nums.some((num, idx) => !Number.isInteger(num) || String(num) !== parts[idx] || num < 0 || num > 255)) {
+      return false;
+    }
+
+    return nums[0] === 127;
   }
 
   invalidateServerUrlCache() {
@@ -57,6 +98,10 @@ export class VaultAPI {
     } catch {
       return a === b;
     }
+  }
+
+  encodePathId(id) {
+    return encodeURIComponent(String(id));
   }
 
   async request(method, path, body = null, requiresAuth = true) {
@@ -126,8 +171,16 @@ export class VaultAPI {
     return this.request('POST', '/auth/setup', { master_password: masterPassword }, false);
   }
 
-  async login(masterPassword) {
-    const data = await this.request('POST', '/auth/login', { master_password: masterPassword }, false);
+  async login(masterPassword, options = {}) {
+    const data = await this.request(
+      'POST',
+      '/auth/login',
+      {
+        master_password: masterPassword,
+        never_auto_lock: options.neverAutoLock === true,
+      },
+      false
+    );
     this.setToken(data.token, await this.getServerUrl());
     return data;
   }
@@ -149,7 +202,7 @@ export class VaultAPI {
   }
 
   async getEntry(id) {
-    return this.request('GET', `/entries/${id}`);
+    return this.request('GET', `/entries/${this.encodePathId(id)}`);
   }
 
   async createEntry(entry) {
@@ -157,11 +210,11 @@ export class VaultAPI {
   }
 
   async updateEntry(id, entry) {
-    return this.request('PUT', `/entries/${id}`, entry);
+    return this.request('PUT', `/entries/${this.encodePathId(id)}`, entry);
   }
 
   async deleteEntry(id) {
-    return this.request('DELETE', `/entries/${id}`);
+    return this.request('DELETE', `/entries/${this.encodePathId(id)}`);
   }
 
   // Vault item endpoints
@@ -180,15 +233,17 @@ export class VaultAPI {
   }
 
   async updateVaultItem(id, payload) {
-    return this.request('PUT', `/vault-items/${id}`, { payload });
+    return this.request('PUT', `/vault-items/${this.encodePathId(id)}`, { payload });
   }
 
   async deleteVaultItem(id) {
-    return this.request('DELETE', `/vault-items/${id}`);
+    return this.request('DELETE', `/vault-items/${this.encodePathId(id)}`);
   }
 
-  async exportVault() {
-    return this.request('GET', '/vault/export');
+  async exportVault(masterPassword) {
+    return this.request('POST', '/vault/export', {
+      master_password: masterPassword,
+    });
   }
 
   // Generate password

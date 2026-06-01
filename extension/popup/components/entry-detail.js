@@ -36,7 +36,7 @@ const EntryDetail = {
         const targetId = btn.dataset.copy;
         const el = document.getElementById(targetId);
         if (targetId === 'detail-url' && this.currentEntry) {
-          window.open(this.currentEntry.website_url, '_blank');
+          window.open(this.normalizeOpenUrl(this.currentEntry.website_url), '_blank', 'noopener,noreferrer');
           return;
         }
         let text;
@@ -85,6 +85,12 @@ const EntryDetail = {
 
   hide() {
     this.screen.classList.add('hidden');
+    this.passwordVisible = false;
+    this.passwordEl.textContent = '\u2022'.repeat(12);
+    this.passwordEl.classList.add('password-masked');
+    this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
+    this.togglePwBtn.title = 'Show password';
+    this.togglePwBtn.setAttribute('aria-label', 'Show password');
     this.currentEntry = null;
   },
 
@@ -108,12 +114,47 @@ const EntryDetail = {
   async loadDetailFavicon(domain) {
     try {
       const result = await sendMessage('GET_FAVICON', { domain });
-      if (result && result.dataUrl) {
-        this.faviconEl.innerHTML = `<img src="${result.dataUrl}" alt="">`;
+      if (
+        result &&
+        this.currentEntry?.website_domain === domain &&
+        this.isSafeImageDataUrl(result.dataUrl)
+      ) {
+        const img = document.createElement('img');
+        img.src = result.dataUrl;
+        img.alt = '';
+        this.faviconEl.replaceChildren(img);
       }
     } catch {
       // No favicon available
     }
+  },
+
+  normalizeOpenUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return 'about:blank';
+
+    const parseHttpUrl = (candidate) => {
+      try {
+        const url = new URL(candidate);
+        return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+      } catch {
+        return '';
+      }
+    };
+
+    const direct = parseHttpUrl(raw);
+    if (direct) return direct;
+
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) {
+      return 'about:blank';
+    }
+
+    return parseHttpUrl(`https://${raw}`) || 'about:blank';
+  },
+
+  isSafeImageDataUrl(dataUrl) {
+    return /^data:image\/(png|jpe?g|webp|gif|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=]+$/i
+      .test(String(dataUrl || ''));
   },
 
   async handleDelete() {

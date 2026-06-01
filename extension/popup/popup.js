@@ -6,7 +6,7 @@ async function areFaviconsEnabled() {
 
   try {
     const result = await chrome.storage.local.get(STORAGE_KEY_ENABLE_FAVICONS);
-    faviconsEnabledCache = result[STORAGE_KEY_ENABLE_FAVICONS] === true;
+    faviconsEnabledCache = result[STORAGE_KEY_ENABLE_FAVICONS] !== false;
   } catch {
     faviconsEnabledCache = false;
   }
@@ -217,7 +217,7 @@ async function handleSessionLoss(err) {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // Utility: Toast notification
@@ -1375,7 +1375,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
     window.VaultSections?.invalidateEntityCache?.();
   }
   if (areaName === 'local' && changes[STORAGE_KEY_ENABLE_FAVICONS]) {
-    faviconsEnabledCache = changes[STORAGE_KEY_ENABLE_FAVICONS].newValue === true;
+    faviconsEnabledCache = changes[STORAGE_KEY_ENABLE_FAVICONS].newValue !== false;
   }
 });
 

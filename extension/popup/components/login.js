@@ -96,6 +96,7 @@ const LoginScreen = {
 
   hide() {
     this.screen.classList.add('hidden');
+    this.passwordInput.value = '';
     this.stopStatusPolling();
   },
 

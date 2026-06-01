@@ -2,47 +2,125 @@
 const YurrrOverlay = {
   container: null,
   currentTarget: null,
+  currentPassword: '',
+  elements: null,
 
   create() {
     if (this.container) return;
 
     this.container = document.createElement('div');
-    this.container.id = 'yurrr-overlay';
-    this.container.innerHTML = `
-      <div class="yurrr-overlay-header">
-        <span class="yurrr-overlay-logo">Yurrr</span>
-        <span class="yurrr-overlay-subtitle">Suggested Password</span>
-      </div>
-      <div class="yurrr-overlay-password" id="yurrr-suggested-pw"></div>
-      <div class="yurrr-overlay-controls">
-        <div class="yurrr-overlay-slider-row">
-          <label>Length: <span id="yurrr-pw-length-label">20</span></label>
-          <input type="range" id="yurrr-pw-length" min="12" max="32" value="20">
+    this.container.id = 'yurrr-overlay-host';
+    Object.assign(this.container.style, {
+      display: 'none',
+      position: 'absolute',
+      zIndex: '2147483647',
+      margin: '0',
+      padding: '0',
+    });
+
+    const shadow = this.container.attachShadow({ mode: 'closed' });
+    shadow.innerHTML = `
+      <style>
+        * { box-sizing: border-box; }
+        .overlay {
+          background: #1a1a2e;
+          border: 1px solid #2ecc71;
+          border-radius: 8px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+          color: #e0e0e0;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          overflow: hidden;
+          overflow-y: auto;
+        }
+        .header {
+          align-items: center;
+          background: #16213e;
+          border-bottom: 1px solid #0f3460;
+          display: flex;
+          justify-content: space-between;
+          padding: 8px 12px;
+        }
+        .logo { color: #2ecc71; font-size: 13px; font-weight: 700; }
+        .subtitle { color: #888; font-size: 11px; }
+        .password {
+          background: #0f3460;
+          border-radius: 4px;
+          font-family: 'Courier New', monospace;
+          font-size: 14px;
+          margin: 8px;
+          padding: 10px 12px;
+          user-select: all;
+          word-break: break-all;
+        }
+        .controls { padding: 8px 12px 12px; }
+        .slider-row {
+          align-items: center;
+          color: #888;
+          display: flex;
+          font-size: 12px;
+          gap: 8px;
+          margin-bottom: 8px;
+        }
+        .slider-row input[type="range"] { accent-color: #2ecc71; flex: 1; }
+        .actions { display: flex; gap: 6px; }
+        button {
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          flex: 1;
+          font-size: 12px;
+          font-weight: 600;
+          padding: 6px 12px;
+        }
+        button:disabled { cursor: not-allowed; opacity: 0.6; }
+        .primary { background: #2ecc71; color: #1a1a2e; }
+        .primary:hover:not(:disabled) { background: #27ae60; }
+        .secondary {
+          background: #16213e;
+          border: 1px solid #333;
+          color: #e0e0e0;
+        }
+        .secondary:hover:not(:disabled) { background: #1a2744; }
+      </style>
+      <div class="overlay">
+        <div class="header">
+          <span class="logo">Yurrr</span>
+          <span class="subtitle">Suggested Password</span>
         </div>
-        <div class="yurrr-overlay-actions">
-          <button id="yurrr-regenerate" class="yurrr-btn-secondary">Regenerate</button>
-          <button id="yurrr-use-pw" class="yurrr-btn-primary">Use Password</button>
+        <div class="password"></div>
+        <div class="controls">
+          <div class="slider-row">
+            <label>Length: <span class="length-label">20</span></label>
+            <input class="length" type="range" min="12" max="32" value="20">
+          </div>
+          <div class="actions">
+            <button class="secondary regenerate" type="button">Regenerate</button>
+            <button class="primary use-password" type="button">Use Password</button>
+          </div>
         </div>
       </div>
     `;
     document.body.appendChild(this.container);
 
-    // Slider
-    const slider = this.container.querySelector('#yurrr-pw-length');
-    const label = this.container.querySelector('#yurrr-pw-length-label');
+    const slider = shadow.querySelector('.length');
+    const label = shadow.querySelector('.length-label');
+    const pwEl = shadow.querySelector('.password');
+    const useBtn = shadow.querySelector('.use-password');
+    this.elements = { slider, label, pwEl, useBtn };
+
     slider.addEventListener('input', () => {
       label.textContent = slider.value;
     });
 
-    // Regenerate
-    this.container.querySelector('#yurrr-regenerate').addEventListener('click', (e) => {
+    shadow.querySelector('.regenerate').addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
-      this.generateAndShow(parseInt(slider.value));
+      this.generateAndShow(Number.parseInt(slider.value, 10));
     });
 
-    // Use password
-    this.container.querySelector('#yurrr-use-pw').addEventListener('click', (e) => {
+    useBtn.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
       this.usePassword();
@@ -101,11 +179,25 @@ const YurrrOverlay = {
     if (this.container) {
       this.container.style.display = 'none';
     }
+    if (this.elements?.pwEl) {
+      this.elements.pwEl.textContent = '';
+    }
+    if (this.elements?.useBtn) {
+      this.elements.useBtn.disabled = true;
+    }
     this.currentTarget = null;
+    this.currentPassword = '';
   },
 
   async generateAndShow(length) {
-    const pwEl = this.container.querySelector('#yurrr-suggested-pw');
+    const pwEl = this.elements?.pwEl;
+    const useBtn = this.elements?.useBtn;
+    if (!pwEl || !useBtn) return;
+
+    this.currentPassword = '';
+    useBtn.disabled = true;
+    pwEl.textContent = 'Generating...';
+
     try {
       const result = await new Promise((resolve, reject) => {
         chrome.runtime.sendMessage(
@@ -116,14 +208,19 @@ const YurrrOverlay = {
           }
         );
       });
+      if (!result?.password) {
+        throw new Error('No password generated');
+      }
+      this.currentPassword = result.password;
       pwEl.textContent = result.password;
+      useBtn.disabled = false;
     } catch {
       pwEl.textContent = 'Unable to generate (vault locked?)';
     }
   },
 
   usePassword() {
-    const pw = this.container.querySelector('#yurrr-suggested-pw').textContent;
+    const pw = this.currentPassword;
     if (!pw || !this.currentTarget) return;
 
     // Fill the password field
@@ -190,5 +287,7 @@ const YurrrOverlay = {
       this.container.remove();
       this.container = null;
     }
+    this.elements = null;
+    this.currentPassword = '';
   },
 };

@@ -69,9 +69,10 @@ RestartSec=5
 # Optional: pin browser/extension origins instead of using the default local/private-origin policy.
 # Environment=YURRR_CORS_ALLOWED_ORIGINS=chrome-extension://<extension-id>,https://10.187.187.102:8443
 # Optional session limits. Defaults are 24 hours JWT max and 240 minutes inactivity.
+# The extension's "Never auto-lock" mode requests a non-expiring server session for that login until manual lock, password change, or server restart.
 # Environment=YURRR_JWT_EXPIRY_HOURS=24
 # Environment=YURRR_INACTIVITY_TIMEOUT_MINUTES=240
-# Optional privacy opt-in: allow the server to fetch favicons from saved websites.
+# Optional privacy opt-in: allow server-side background favicon prefetching.
 # Environment=YURRR_ENABLE_THIRD_PARTY_FAVICONS=true
 
 [Install]
@@ -187,7 +188,7 @@ If you set up a git repo, clone it on both machines.
    ```
 3. Click **Test Connection** — should show "Connected!"
 4. Click **Save**
-5. In **Privacy**, leave website favicons disabled unless you want the popup to request saved-site icons from the server.
+5. In **Privacy**, leave website favicons enabled if you want the popup to request saved-site icons from the server, or turn them off to keep showing letter fallbacks.
 
 ### Step 5: Initialize the Vault
 
@@ -234,6 +235,7 @@ If you set up a git repo, clone it on both machines.
 5. **Auto-locks according to your selected mode**
    - Extension relaxed inactivity mode defaults to 15 minutes.
    - Server-side session defaults are 24 hours maximum JWT age and 240 minutes inactivity.
+   - "Never auto-lock" keeps the vault unlocked until you lock it manually, change the master password, or restart the server.
 
 ---
 
@@ -246,7 +248,8 @@ If you set up a git repo, clone it on both machines.
 - The database file (`vault.db`) contains only encrypted passwords
 - Communication is always over **HTTPS/TLS** (even the self-signed cert encrypts traffic)
 - SQLite uses WAL mode. For file backups, copy `vault.db`, `vault.db-wal`, and `vault.db-shm` together, or stop the service before copying.
-- Favicon display is disabled by default in the extension popup. Server-side favicon discovery is disabled by default too; enable `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you accept those external favicon requests.
+- Decrypted JSON export requires typing the export confirmation and re-entering the master password; the server rejects export without that fresh check.
+- Favicon display is enabled by default in the extension popup and can be disabled in Options. Server-side background favicon discovery is disabled by default; enable `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you also want the server to prefetch icons when entries are created or imported.
 - CORS defaults allow extension origins and local/private HTTP(S) origins. Set `YURRR_CORS_ALLOWED_ORIGINS` to a comma-separated exact-origin allowlist for stricter deployments.
 
 ## Current Follow-ups
@@ -272,7 +275,7 @@ If you set up a git repo, clone it on both machines.
 - First login after server start is slower; subsequent ones use the same session
 
 ### "Session expired" errors
-- Your session expired. Defaults are 24 hours max JWT age and 240 minutes server inactivity; the extension relaxed inactivity setting defaults to 15 minutes.
+- Your session expired. Defaults are 24 hours max JWT age and 240 minutes server inactivity; the extension relaxed inactivity setting defaults to 15 minutes. "Never auto-lock" sessions still end when you lock manually, change the master password, or restart the server.
 - Just unlock again with your master password
 
 ### Extension not detecting forms

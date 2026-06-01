@@ -4,6 +4,7 @@ use std::sync::Arc;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use chrono::{DateTime, Utc};
+use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -16,12 +17,13 @@ use crate::errors::AppError;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String, // session ID
-    pub exp: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exp: Option<usize>,
 }
 
 pub struct SessionData {
     pub encryption_key: Zeroizing<[u8; 32]>,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone)]
@@ -46,7 +48,10 @@ impl SessionStore {
         now: DateTime<Utc>,
     ) -> usize {
         let before = sessions.len();
-        sessions.retain(|_, data| data.expires_at > now);
+        sessions.retain(|_, data| match data.expires_at {
+            Some(expires_at) => expires_at > now,
+            None => true,
+        });
         before - sessions.len()
     }
 
@@ -60,11 +65,19 @@ impl SessionStore {
         }
     }
 
-    pub fn create_token(&self, session_id: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    pub fn create_token(
+        &self,
+        session_id: &str,
+        never_auto_lock: bool,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         let expiry = chrono::Utc::now() + chrono::Duration::hours(jwt_expiry_hours() as i64);
         let claims = Claims {
             sub: session_id.to_string(),
-            exp: expiry.timestamp() as usize,
+            exp: if never_auto_lock {
+                None
+            } else {
+                Some(expiry.timestamp() as usize)
+            },
         };
         encode(
             &Header::default(),
@@ -74,15 +87,32 @@ impl SessionStore {
     }
 
     pub fn validate_token(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+        let mut validation = Validation::default();
+        validation.validate_exp = false;
+        validation.required_spec_claims.remove("exp");
+
         let data = decode::<Claims>(
             token,
             &DecodingKey::from_secret(&self.jwt_secret),
-            &Validation::default(),
+            &validation,
         )?;
+
+        if let Some(exp) = data.claims.exp {
+            let now = Utc::now().timestamp().max(0) as usize;
+            if exp <= now {
+                return Err(ErrorKind::ExpiredSignature.into());
+            }
+        }
+
         Ok(data.claims)
     }
 
-    pub async fn create_session(&self, session_id: String, encryption_key: Zeroizing<[u8; 32]>) {
+    pub async fn create_session(
+        &self,
+        session_id: String,
+        encryption_key: Zeroizing<[u8; 32]>,
+        never_auto_lock: bool,
+    ) {
         let mut sessions = self.sessions.write().await;
         let now = Utc::now();
         Self::cleanup_expired_locked(&mut sessions, now);
@@ -90,7 +120,11 @@ impl SessionStore {
             session_id,
             SessionData {
                 encryption_key,
-                expires_at: Self::next_expiry(now),
+                expires_at: if never_auto_lock {
+                    None
+                } else {
+                    Some(Self::next_expiry(now))
+                },
             },
         );
     }
@@ -109,7 +143,9 @@ impl SessionStore {
         Self::cleanup_expired_locked(&mut sessions, now);
         if let Some(session) = sessions.get_mut(session_id) {
             // Use wall-clock timestamps so inactivity still expires across suspend/sleep.
-            session.expires_at = Self::next_expiry(now);
+            if session.expires_at.is_some() {
+                session.expires_at = Some(Self::next_expiry(now));
+            }
             Some(session.encryption_key.clone())
         } else {
             None
@@ -205,7 +241,7 @@ mod tests {
     async fn cleanup_expired_removes_only_expired_sessions() {
         let store = SessionStore::new();
         store
-            .create_session("active".to_string(), test_key(1))
+            .create_session("active".to_string(), test_key(1), false)
             .await;
 
         {
@@ -214,7 +250,7 @@ mod tests {
                 "expired".to_string(),
                 SessionData {
                     encryption_key: test_key(2),
-                    expires_at: Utc::now() - chrono::Duration::seconds(1),
+                    expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
                 },
             );
         }
@@ -228,7 +264,7 @@ mod tests {
     async fn session_access_opportunistically_cleans_other_expired_sessions() {
         let store = SessionStore::new();
         store
-            .create_session("active".to_string(), test_key(1))
+            .create_session("active".to_string(), test_key(1), false)
             .await;
 
         {
@@ -237,7 +273,7 @@ mod tests {
                 "expired".to_string(),
                 SessionData {
                     encryption_key: test_key(2),
-                    expires_at: Utc::now() - chrono::Duration::seconds(1),
+                    expires_at: Some(Utc::now() - chrono::Duration::seconds(1)),
                 },
             );
         }
@@ -247,5 +283,79 @@ mod tests {
         let sessions = store.sessions.read().await;
         assert!(sessions.contains_key("active"));
         assert!(!sessions.contains_key("expired"));
+    }
+
+    #[tokio::test]
+    async fn never_auto_lock_session_survives_expiry_cleanup() {
+        let store = SessionStore::new();
+        store
+            .create_session("never".to_string(), test_key(1), true)
+            .await;
+
+        assert_eq!(store.cleanup_expired().await, 0);
+        assert!(store.has_active_session("never").await);
+        assert!(store.get_encryption_key("never").await.is_some());
+
+        let sessions = store.sessions.read().await;
+        assert!(sessions.get("never").unwrap().expires_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn regular_session_access_extends_expiry() {
+        let store = SessionStore::new();
+        store
+            .create_session("active".to_string(), test_key(1), false)
+            .await;
+
+        let before = {
+            let sessions = store.sessions.read().await;
+            sessions.get("active").unwrap().expires_at.unwrap()
+        };
+
+        assert!(store.get_encryption_key("active").await.is_some());
+
+        let after = {
+            let sessions = store.sessions.read().await;
+            sessions.get("active").unwrap().expires_at.unwrap()
+        };
+
+        assert!(after >= before);
+    }
+
+    #[test]
+    fn normal_token_has_expiry_claim() {
+        let store = SessionStore::new();
+        let token = store.create_token("normal", false).unwrap();
+        let claims = store.validate_token(&token).unwrap();
+
+        assert_eq!(claims.sub, "normal");
+        assert!(claims.exp.is_some());
+    }
+
+    #[test]
+    fn never_auto_lock_token_has_no_expiry_claim() {
+        let store = SessionStore::new();
+        let token = store.create_token("never", true).unwrap();
+        let claims = store.validate_token(&token).unwrap();
+
+        assert_eq!(claims.sub, "never");
+        assert!(claims.exp.is_none());
+    }
+
+    #[test]
+    fn expired_normal_token_is_rejected() {
+        let store = SessionStore::new();
+        let claims = Claims {
+            sub: "expired".to_string(),
+            exp: Some((Utc::now() - chrono::Duration::seconds(1)).timestamp() as usize),
+        };
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(&store.jwt_secret),
+        )
+        .unwrap();
+
+        assert!(store.validate_token(&token).is_err());
     }
 }

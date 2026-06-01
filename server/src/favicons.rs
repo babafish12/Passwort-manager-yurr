@@ -461,13 +461,12 @@ pub async fn fetch_favicon_for_domain(domain: &str) -> Option<(Vec<u8>, String)>
     fetch_image(google_url, &google_hosts).await
 }
 
-/// Check if a favicon already exists for a domain; if not, fetch and store it.
-pub async fn ensure_favicon(pool: &SqlitePool, domain: &str) {
+async fn ensure_favicon_with_policy(pool: &SqlitePool, domain: &str, allow_external_fetch: bool) {
     let Some(domain) = domain::normalize_domain(domain) else {
         return;
     };
 
-    if !config::third_party_favicons_enabled() {
+    if !allow_external_fetch {
         return;
     }
 
@@ -521,7 +520,13 @@ pub async fn ensure_favicon(pool: &SqlitePool, domain: &str) {
     mark_fetch_finished(&domain).await;
 }
 
-/// GET /api/v1/favicons/{domain} — serve a cached favicon as raw bytes.
+/// Check if a favicon already exists for a domain; if not, fetch and store it
+/// when background third-party favicon discovery is enabled.
+pub async fn ensure_favicon(pool: &SqlitePool, domain: &str) {
+    ensure_favicon_with_policy(pool, domain, config::third_party_favicons_enabled()).await;
+}
+
+/// GET /api/v1/favicons/{domain} — serve a cached favicon, fetching it on demand only when enabled.
 pub async fn get_favicon_handler(
     State(state): State<AppState>,
     _session: AuthenticatedSession,
@@ -536,8 +541,8 @@ pub async fn get_favicon_handler(
             .fetch_optional(&state.db)
             .await?;
 
-    if favicon.is_none() {
-        ensure_favicon(&state.db, &domain).await;
+    if favicon.is_none() && config::third_party_favicons_enabled() {
+        ensure_favicon_with_policy(&state.db, &domain, true).await;
         favicon = sqlx::query_as("SELECT image_data, mime_type FROM favicons WHERE domain = ?")
             .bind(&domain)
             .fetch_optional(&state.db)

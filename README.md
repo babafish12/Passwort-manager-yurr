@@ -15,11 +15,12 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 
 ## Current Security and Operations Notes
 
-- Server session defaults are `YURRR_JWT_EXPIRY_HOURS=24` and `YURRR_INACTIVITY_TIMEOUT_MINUTES=240`. The extension's relaxed inactivity mode defaults to 15 minutes unless changed in Options.
+- Server session defaults are `YURRR_JWT_EXPIRY_HOURS=24` and `YURRR_INACTIVITY_TIMEOUT_MINUTES=240`. The extension's relaxed inactivity mode defaults to 15 minutes unless changed in Options. The "Never auto-lock" option requests a non-expiring server session and keeps the vault open until manual lock, password change, or server restart.
 - CORS can be pinned with `YURRR_CORS_ALLOWED_ORIGINS` as a comma-separated exact-origin allowlist. If unset, the server allows browser extension origins plus local/private HTTP(S) origins.
 - The generated self-signed TLS certificate is convenient for local setup, but LAN or Tailscale IP access can still hit SAN/name warnings. Use a custom certificate with the exact DNS/IP SANs you connect to if you want strict browser validation instead of a saved exception.
 - SQLite runs in WAL mode. Backups must include `vault.db`, `vault.db-wal`, and `vault.db-shm`, or be taken while the service is stopped/after a checkpoint.
-- Popup favicon display is disabled by default in Options. Server-side favicon discovery is also disabled by default; set `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you want the server to request saved-site icons.
+- Popup favicon display is enabled by default in Options and can be turned off there. Server-side background favicon discovery and on-demand fetching are disabled by default; set `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you want the server to fetch saved-site icons.
+- Decrypted vault export requires both the typed export confirmation and a fresh master-password check on the server.
 
 ## Follow-up Work
 
@@ -28,6 +29,7 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 - Card and address autofill from the extension.
 - Metadata encryption for domains, usernames, labels, and item metadata.
 - Trash/undo flows and broader automated test coverage.
+- One-time save confirmation tokens for content-script save/update requests, plus an explicit opt-in for autofill on non-loopback HTTP pages.
 
 ---
 
@@ -64,7 +66,7 @@ See [USAGE.md](USAGE.md) for the full setup and usage guide.
 - Popup now includes vault section tabs: **Passwords**, **Cards**, and **Addresses**
   - Cards and addresses can be added, edited, searched, and deleted directly in the popup
   - Card type is auto-detected (Visa, Mastercard, Amex, Discover, JCB, Diners) and card numbers are validated with Luhn checks
-  - Cards/addresses are currently stored locally in extension storage (`chrome.storage.local`)
+  - Cards/addresses are stored as encrypted vault items on the server after a one-time migration from older local extension storage
 - Session/network behavior hardened:
   - API calls retry once on transient fetch/network errors
   - if a protected request fails with auth/network loss, the extension force-locks locally and requires re-login

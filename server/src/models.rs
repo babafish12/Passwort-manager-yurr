@@ -41,6 +41,7 @@ pub struct SetupRequest {
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub master_password: String,
+    pub never_auto_lock: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +170,11 @@ pub struct VaultExportDocument {
     pub exported_at: String,
     pub passwords: Vec<VaultExportPassword>,
     pub vault_items: Vec<VaultItemDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VaultExportRequest {
+    pub master_password: String,
 }
 
 #[derive(Debug, Serialize)]

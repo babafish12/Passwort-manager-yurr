@@ -5,6 +5,8 @@ const STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS = 'yurrr_auto_email_suggestions';
 const STORAGE_KEY_AUTO_EMAIL_SELECTED = 'yurrr_auto_email_selected';
 const STORAGE_KEY_ENABLE_FAVICONS = 'yurrr_enable_favicons';
 const DECRYPTED_EXPORT_CONFIRMATION = 'EXPORT DECRYPTED VAULT';
+const MAX_EMAIL_SUGGESTIONS = 100;
+const SESSION_MODES = new Set(['ephemeral', 'persistent', 'inactivity', 'never']);
 
 const serverUrlInput = document.getElementById('server-url');
 const testBtn = document.getElementById('test-btn');
@@ -22,6 +24,7 @@ const TOAST_ICONS = {
 
 let toastDismissTimer = null;
 let toastRemoveTimer = null;
+const statusHideTimers = new WeakMap();
 
 function setButtonLoading(button, loading, loadingLabel = 'Loading...') {
   if (!button) return;
@@ -90,9 +93,16 @@ function showToast(message, variant = 'success') {
 }
 
 function hideStatusLater(el, delay = 2500) {
-  setTimeout(() => {
+  const existingTimer = statusHideTimers.get(el);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+  }
+
+  const timer = setTimeout(() => {
     el.className = 'status hidden';
+    statusHideTimers.delete(el);
   }, delay);
+  statusHideTimers.set(el, timer);
 }
 
 // Load saved URL
@@ -106,11 +116,53 @@ function showStatus(message, type) {
   showToast(message, type === 'error' ? 'error' : 'success');
 }
 
+function isLoopbackHost(hostname) {
+  const host = String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1') {
+    return true;
+  }
+
+  const parts = host.split('.');
+  if (parts.length !== 4) return false;
+  const nums = parts.map((part) => Number.parseInt(part, 10));
+  if (nums.some((num, idx) => !Number.isInteger(num) || String(num) !== parts[idx] || num < 0 || num > 255)) {
+    return false;
+  }
+
+  return nums[0] === 127;
+}
+
+function normalizeServerUrlInput(value) {
+  let url;
+  try {
+    url = new URL(String(value || '').trim());
+  } catch {
+    throw new Error('Use a valid HTTPS server URL.');
+  }
+
+  if (url.username || url.password) {
+    throw new Error('Server URL must not contain credentials.');
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error('Use an HTTPS server URL.');
+  }
+
+  if (url.protocol === 'http:' && !isLoopbackHost(url.hostname)) {
+    throw new Error('HTTP is only allowed for localhost development URLs.');
+  }
+
+  url.hash = '';
+  url.search = '';
+  return url.href.replace(/\/+$/, '');
+}
+
 testBtn.addEventListener('click', async () => {
-  const url = serverUrlInput.value.replace(/\/+$/, '');
   setButtonLoading(testBtn, true, 'Testing...');
 
   try {
+    const url = normalizeServerUrlInput(serverUrlInput.value);
+    serverUrlInput.value = url;
     const resp = await fetch(`${url}/api/v1/auth/status`);
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''}`);
@@ -129,7 +181,16 @@ testBtn.addEventListener('click', async () => {
 });
 
 saveBtn.addEventListener('click', () => {
-  const url = serverUrlInput.value.replace(/\/+$/, '');
+  let url;
+  try {
+    url = normalizeServerUrlInput(serverUrlInput.value);
+    serverUrlInput.value = url;
+  } catch (err) {
+    showStatus(err.message, 'error');
+    hideStatusLater(statusEl);
+    return;
+  }
+
   setButtonLoading(saveBtn, true, 'Saving...');
   chrome.storage.local.set({ [STORAGE_KEY]: url }, () => {
     showStatus('Settings saved!', 'success');
@@ -164,7 +225,8 @@ function updateAutoLockVisibility(mode) {
 }
 
 chrome.storage.local.get([STORAGE_KEY_SESSION_MODE, STORAGE_KEY_AUTO_LOCK_MINUTES], (result) => {
-  const mode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+  const storedMode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+  const mode = SESSION_MODES.has(storedMode) ? storedMode : 'ephemeral';
   sessionModeSelect.value = mode;
   autoLockInput.value = result[STORAGE_KEY_AUTO_LOCK_MINUTES] || 15;
   updateAutoLockVisibility(mode);
@@ -191,6 +253,8 @@ saveSessionBtn.addEventListener('click', () => {
       message = 'Saved! Session persists across restarts, but locks when laptop locks.';
     } else if (mode === 'inactivity') {
       message = `Saved! Relaxed mode: session locks after ${minutes} minutes of inactivity.`;
+    } else if (mode === 'never') {
+      message = 'Saved! Session only locks on manual lock, password change, or server restart.';
     }
     sessionStatusEl.textContent = message;
     sessionStatusEl.className = 'status success';
@@ -217,7 +281,7 @@ function normalizeEmailSuggestions(rawValue) {
     unique.push(email);
   }
 
-  return unique;
+  return unique.slice(0, MAX_EMAIL_SUGGESTIONS);
 }
 
 function mergeUniqueEmails(...lists) {
@@ -274,6 +338,11 @@ function confirmDecryptedExport() {
   return window.prompt(message, '') === DECRYPTED_EXPORT_CONFIRMATION;
 }
 
+function promptExportMasterPassword() {
+  const value = window.prompt('Enter your master password to export decrypted vault data.', '');
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
 function downloadJson(filename, data) {
   const json = JSON.stringify(data ?? null, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
@@ -294,23 +363,31 @@ exportVaultBtn.addEventListener('click', async () => {
     return;
   }
 
+  let masterPassword = promptExportMasterPassword();
+  if (!masterPassword) {
+    showExportStatus('Export canceled.', 'error');
+    hideStatusLater(exportStatusEl, 3000);
+    return;
+  }
+
   setButtonLoading(exportVaultBtn, true, 'Exporting...');
 
   try {
-    const exportData = await sendBackgroundMessage('EXPORT_VAULT');
+    const exportData = await sendBackgroundMessage('EXPORT_VAULT', { masterPassword });
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadJson(`yurrr-vault-export-${timestamp}.json`, exportData);
     showExportStatus('Vault export downloaded.', 'success');
   } catch (err) {
     showExportStatus(`Export failed: ${err.message}`, 'error');
   } finally {
+    masterPassword = '';
     setButtonLoading(exportVaultBtn, false);
     hideStatusLater(exportStatusEl, 3000);
   }
 });
 
 chrome.storage.local.get(STORAGE_KEY_ENABLE_FAVICONS, (result) => {
-  enableFaviconsEl.checked = result[STORAGE_KEY_ENABLE_FAVICONS] === true;
+  enableFaviconsEl.checked = result[STORAGE_KEY_ENABLE_FAVICONS] !== false;
 });
 
 enableFaviconsEl.addEventListener('change', () => {
@@ -404,9 +481,7 @@ function applyAutoDetectedEmails(nextDetectedEmails, persistSelection = true) {
 chrome.storage.local.get(
   [STORAGE_KEY_EMAIL_SUGGESTIONS, STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS, STORAGE_KEY_AUTO_EMAIL_SELECTED],
   (result) => {
-    const suggestions = Array.isArray(result[STORAGE_KEY_EMAIL_SUGGESTIONS])
-      ? result[STORAGE_KEY_EMAIL_SUGGESTIONS]
-      : [];
+    const suggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_EMAIL_SUGGESTIONS]);
     const autoSuggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]);
     const hasSelected = Array.isArray(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
     const selected = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
@@ -464,7 +539,7 @@ importVaultEmailsBtn.addEventListener('click', async () => {
       ? existing[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]
       : [];
 
-    const merged = mergeUniqueEmails(currentAuto, vaultEmails);
+    const merged = mergeUniqueEmails(currentAuto, vaultEmails).slice(0, MAX_EMAIL_SUGGESTIONS);
     await chrome.storage.local.set({ [STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]: merged });
     showEmailStatus(`Imported ${vaultEmails.length} emails from vault.`, 'success');
   } catch (err) {
@@ -532,6 +607,16 @@ const skipDuplicatesEl = document.getElementById('skip-duplicates');
 
 let parsedEntries = [];
 
+function clearParsedImportState(clearFile = false) {
+  parsedEntries = [];
+  importBtn.disabled = true;
+  previewArea.classList.add('hidden');
+  if (clearFile) {
+    csvFileInput.value = '';
+    previewBtn.disabled = true;
+  }
+}
+
 function showImportStatus(message, type, showToastFlag = true) {
   importStatus.textContent = message;
   importStatus.className = `status ${type}`;
@@ -542,10 +627,13 @@ function showImportStatus(message, type, showToastFlag = true) {
 
 csvFileInput.addEventListener('change', () => {
   previewBtn.disabled = !csvFileInput.files.length;
-  importBtn.disabled = true;
-  previewArea.classList.add('hidden');
+  clearParsedImportState(false);
   importStatus.classList.add('hidden');
-  parsedEntries = [];
+});
+
+browserSelect.addEventListener('change', () => {
+  clearParsedImportState(false);
+  importStatus.classList.add('hidden');
 });
 
 previewBtn.addEventListener('click', () => {
@@ -630,6 +718,7 @@ importBtn.addEventListener('click', async () => {
     });
 
     showImportStatus(`Done! Imported: ${result.imported}, Skipped: ${result.skipped}, Failed: ${result.failed}`, 'success', true);
+    clearParsedImportState(true);
   } catch (err) {
     showImportStatus(`Import failed: ${err.message}`, 'error', true);
   } finally {
@@ -640,5 +729,5 @@ importBtn.addEventListener('click', async () => {
 function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
-  return div.innerHTML;
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }

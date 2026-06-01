@@ -23,16 +23,18 @@ const EntryList = {
       window.animatePopupScreen?.(this.screen, 'back');
     }
     this.searchInput.value = '';
-    this.searchInput.focus();
+    this.focusSearchInput();
 
     try {
       this.entries = Array.isArray(initialEntries) ? initialEntries : await sendMessage('LIST_ENTRIES');
       this.renderEntries(this.entries);
+      this.focusSearchInput();
     } catch (err) {
       if (isSessionLostError(err)) {
         return;
       }
       this.renderEmptyState(`Failed to load: ${err.message || 'Unknown error'}`);
+      this.focusSearchInput();
     }
   },
 
@@ -123,6 +125,20 @@ const EntryList = {
     this.listEl.replaceChildren(empty);
   },
 
+  focusSearchInput() {
+    if (!this.searchInput || this.screen.classList.contains('hidden')) return;
+
+    this.searchInput.focus({ preventScroll: true });
+    requestAnimationFrame(() => {
+      if (!this.searchInput || this.screen.classList.contains('hidden')) return;
+      this.searchInput.focus({ preventScroll: true });
+    });
+    setTimeout(() => {
+      if (!this.searchInput || this.screen.classList.contains('hidden')) return;
+      this.searchInput.focus({ preventScroll: true });
+    }, 50);
+  },
+
   async deleteEntry(entryId) {
     const entry = this.entries.find((item) => item.id === entryId);
     if (!entry) return;
@@ -166,7 +182,7 @@ const EntryList = {
       }
       try {
         const result = await sendMessage('GET_FAVICON', { domain });
-        if (result && result.dataUrl) {
+        if (result && this.isSafeImageDataUrl(result.dataUrl)) {
           this.listEl
             .querySelectorAll(`.entry-icon[data-favicon-domain="${CSS.escape(domain)}"]`)
             .forEach((el) => {
@@ -180,5 +196,10 @@ const EntryList = {
         // Keep letter fallback
       }
     }
+  },
+
+  isSafeImageDataUrl(dataUrl) {
+    return /^data:image\/(png|jpe?g|webp|gif|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=]+$/i
+      .test(String(dataUrl || ''));
   },
 };

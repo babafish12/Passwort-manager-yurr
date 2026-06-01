@@ -166,14 +166,15 @@ pub async fn login(
             .map_err(|e| AppError::Internal(format!("Task join error: {e}")))?;
 
     let session_id = uuid::Uuid::new_v4().to_string();
+    let never_auto_lock = req.never_auto_lock.unwrap_or(false);
     let token = state
         .sessions
-        .create_token(&session_id)
+        .create_token(&session_id, never_auto_lock)
         .map_err(|e| AppError::Internal(format!("Token creation failed: {e}")))?;
 
     state
         .sessions
-        .create_session(session_id, encryption_key)
+        .create_session(session_id, encryption_key, never_auto_lock)
         .await;
 
     sqlx::query(

@@ -8,6 +8,8 @@ import {
   STORAGE_KEY_AUTO_LOCK_MINUTES,
   SESSION_MODE_PERSISTENT,
   SESSION_MODE_INACTIVITY,
+  SESSION_MODE_NEVER,
+  SESSION_MODES,
 } from '../lib/constants.js';
 
 const AUTO_LOCK_ALARM = 'auto-lock';
@@ -34,8 +36,16 @@ export class SessionManager {
   async _getMode() {
     if (this._cachedMode) return this._cachedMode;
     const result = await chrome.storage.local.get(STORAGE_KEY_SESSION_MODE);
-    this._cachedMode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+    this._cachedMode = this._normalizeMode(result[STORAGE_KEY_SESSION_MODE]);
     return this._cachedMode;
+  }
+
+  _normalizeMode(mode) {
+    return SESSION_MODES.includes(mode) ? mode : 'ephemeral';
+  }
+
+  async isNeverAutoLockMode() {
+    return (await this._getMode()) === SESSION_MODE_NEVER;
   }
 
   async _getAutoLockMinutes() {
@@ -50,7 +60,11 @@ export class SessionManager {
   async saveToken(token) {
     const mode = await this._getMode();
     const serverUrl = await this.api.getServerUrl();
-    if (mode === SESSION_MODE_PERSISTENT || mode === SESSION_MODE_INACTIVITY) {
+    if (
+      mode === SESSION_MODE_PERSISTENT ||
+      mode === SESSION_MODE_INACTIVITY ||
+      mode === SESSION_MODE_NEVER
+    ) {
       await chrome.storage.local.set({
         [STORAGE_KEY_TOKEN]: token,
         [STORAGE_KEY_TOKEN_SERVER_URL]: serverUrl,
@@ -267,7 +281,7 @@ export class SessionManager {
       }
 
       if (changes[STORAGE_KEY_SESSION_MODE]) {
-        const newMode = changes[STORAGE_KEY_SESSION_MODE].newValue || 'ephemeral';
+        const newMode = this._normalizeMode(changes[STORAGE_KEY_SESSION_MODE].newValue);
         this._cachedMode = newMode;
         // Clear token on mode change — user must re-login
         await this.clearToken();

@@ -59,7 +59,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/vault-items/{id}", put(vault_items::update_vault_item))
         .route("/vault-items/{id}", delete(vault_items::delete_vault_item))
         // Vault export/import routes
-        .route("/vault/export", get(vault_export::export_vault))
+        .route("/vault/export", post(vault_export::export_vault))
         .route("/vault/import", post(vault_export::import_vault))
         // Favicon route
         .route("/favicons/{domain}", get(favicons::get_favicon_handler))

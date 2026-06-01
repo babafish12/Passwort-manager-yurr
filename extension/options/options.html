@@ -122,7 +122,7 @@
           </span>
           <span>Show website favicons in the popup</span>
         </label>
-        <small>Disabled by default. When enabled, the popup can request saved-site icons from your server for display.</small>
+        <small>Enabled by default. Turn this off to stop the popup from requesting saved-site icons from your server.</small>
       </div>
 
       <div id="privacy-status" class="status hidden" aria-live="polite"></div>
@@ -146,8 +146,9 @@
           <option value="ephemeral">Lock on browser restart (default)</option>
           <option value="persistent">Lock when laptop locks</option>
           <option value="inactivity">Lock after inactivity (relaxed)</option>
+          <option value="never">Never auto-lock</option>
         </select>
-        <small>Controls when the vault locks. "Relaxed" mode stays unlocked across browser restarts and system locks, locking only after inactivity.</small>
+        <small>Controls when the vault locks. "Never" stays unlocked until manual lock, password change, or server restart.</small>
       </div>
 
       <div class="field" id="auto-lock-field" style="display: none;">

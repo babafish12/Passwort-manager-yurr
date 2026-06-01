@@ -27,6 +27,29 @@ fn import_id(value: &str) -> String {
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
+async fn verify_master_password_for_export(
+    state: &AppState,
+    master_password: String,
+) -> Result<(), AppError> {
+    let (hash,): (String,) = sqlx::query_as("SELECT password_hash FROM master_config WHERE id = 1")
+        .fetch_one(&state.db)
+        .await?;
+
+    let valid = tokio::task::spawn_blocking(move || {
+        crypto::verify_master_password(&master_password, &hash)
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Task join error: {e}")))?;
+
+    if !valid {
+        return Err(AppError::Unauthorized(
+            "Master password is incorrect".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn decrypt_password_entry(
     row: EntryRow,
     encryption_key: &[u8; 32],
@@ -58,7 +81,10 @@ fn decrypt_password_entry(
 pub async fn export_vault(
     State(state): State<AppState>,
     session: AuthenticatedSession,
+    Json(req): Json<VaultExportRequest>,
 ) -> Result<Json<VaultExportDocument>, AppError> {
+    verify_master_password_for_export(&state, req.master_password).await?;
+
     let entry_rows: Vec<EntryRow> = sqlx::query_as(
         "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries ORDER BY website_domain, username",
     )

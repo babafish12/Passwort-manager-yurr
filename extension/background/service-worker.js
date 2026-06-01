@@ -12,9 +12,11 @@ import {
 const api = new VaultAPI();
 const session = new SessionManager(api);
 const faviconCache = new Map();
+let pendingCredentials = null;
 const PENDING_CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
 const MAX_AUTO_EMAIL_SUGGESTIONS = 100;
+const MAX_VISIBLE_EMAIL_SUGGESTIONS = 8;
 const AUTH_REQUIRED_TYPES = new Set([
   'LIST_ENTRIES',
   'GET_ENTRY',
@@ -65,12 +67,13 @@ async function initializeServiceWorker() {
 }
 
 async function restrictLocalStorageAccess() {
-  if (typeof chrome.storage.local.setAccessLevel !== 'function') {
-    return;
-  }
-
   try {
-    await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    if (typeof chrome.storage.local.setAccessLevel === 'function') {
+      await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    }
+    if (typeof chrome.storage.session?.setAccessLevel === 'function') {
+      await chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
+    }
   } catch {
     // Older browsers may not support storage access levels.
   }
@@ -182,8 +185,39 @@ async function getKnownEmailUsernamesFromVault() {
   }
 }
 
+async function hasSavedCredentialsForPage(pageUrl) {
+  if (!isCredentialPageAllowed(pageUrl)) {
+    return false;
+  }
+
+  if (!(await session.isUnlocked())) {
+    return true;
+  }
+
+  const domain = getDomainFromUrl(pageUrl);
+  if (!domain) {
+    return false;
+  }
+
+  try {
+    const entries = await session.getCredentialsForDomain(domain);
+    return entries.some((entry) => isCredentialAllowedForPage(entry, pageUrl));
+  } catch (err) {
+    if (err?.code === 'AUTH_ERROR') {
+      await session.forceLocalLock();
+      faviconCache.clear();
+      await clearAllPendingState();
+    }
+    return true;
+  }
+}
+
 async function getEmailSuggestionsForPage(pageUrl) {
   if (!isCredentialPageAllowed(pageUrl)) {
+    return [];
+  }
+
+  if (await hasSavedCredentialsForPage(pageUrl)) {
     return [];
   }
 
@@ -202,7 +236,8 @@ async function getEmailSuggestionsForPage(pageUrl) {
     : allAutoSuggestions;
   const vaultSuggestions = await getKnownEmailUsernamesFromVault();
 
-  return mergeEmailLists(manualSuggestions, autoSuggestions, vaultSuggestions);
+  return mergeEmailLists(manualSuggestions, autoSuggestions, vaultSuggestions)
+    .slice(0, MAX_VISIBLE_EMAIL_SUGGESTIONS);
 }
 
 async function storeDiscoveredEmailForPage(pageUrl, value) {
@@ -387,6 +422,16 @@ function getDomainFromUrl(url, fallback = '') {
   return normalizeDomain(parsed?.hostname || fallback);
 }
 
+function getSenderFrameKey(sender) {
+  const tabId = sender?.tab?.id;
+  const frameId = Number.isInteger(sender?.frameId) ? sender.frameId : 0;
+  if (!Number.isInteger(tabId)) {
+    return null;
+  }
+
+  return `${tabId}:${frameId}`;
+}
+
 function getSafeCredentialUrlForPage(candidateUrl, pageUrl) {
   const page = parseUrl(pageUrl);
   if (!page || !isCredentialPageAllowed(page.href)) {
@@ -475,35 +520,33 @@ async function clearPendingUsername(domain) {
   await writePendingUsernames(usernames);
 }
 
-async function setPendingCredentials(payload) {
+async function setPendingCredentials(payload, sender) {
   const domain = getDomainFromUrl(payload?.url);
   const password = String(payload?.password || '');
   if (!domain || !password) return false;
 
-  await chrome.storage.session.set({
-    [STORAGE_KEY_PENDING_CREDENTIALS]: {
-      url: payload.url,
-      domain,
-      username: String(payload.username || '').trim(),
-      password,
-      pageUrl: payload.pageUrl || payload.url || '',
-      promptReady: payload.promptReady === true,
-      expiresAt: Date.now() + PENDING_CREDENTIALS_TTL_MS,
-    },
-  });
+  pendingCredentials = {
+    url: payload.url,
+    domain,
+    username: String(payload.username || '').trim(),
+    password,
+    pageUrl: payload.pageUrl || payload.url || '',
+    promptReady: payload.promptReady === true,
+    frameKey: getSenderFrameKey(sender),
+    expiresAt: Date.now() + PENDING_CREDENTIALS_TTL_MS,
+  };
   return true;
 }
 
-async function getPendingCredentials(domain) {
+async function getPendingCredentials(domain, sender = null) {
   const cleanDomain = normalizeDomain(domain);
   if (!cleanDomain) return null;
 
-  const result = await chrome.storage.session.get(STORAGE_KEY_PENDING_CREDENTIALS);
-  const pending = result[STORAGE_KEY_PENDING_CREDENTIALS];
+  const pending = pendingCredentials;
   if (!pending || typeof pending !== 'object') return null;
 
   if (typeof pending.expiresAt !== 'number' || pending.expiresAt <= Date.now()) {
-    await chrome.storage.session.remove(STORAGE_KEY_PENDING_CREDENTIALS);
+    pendingCredentials = null;
     return null;
   }
 
@@ -511,14 +554,27 @@ async function getPendingCredentials(domain) {
     return null;
   }
 
+  const frameKey = getSenderFrameKey(sender);
+  if (pending.frameKey && frameKey && pending.frameKey !== frameKey) {
+    return null;
+  }
+
   return pending;
 }
 
+function pendingCredentialMatchesSubmission(pending, pageUrl, password) {
+  if (!pending || !password) return false;
+  if (!isCredentialAllowedForPage({ website_url: pending.url }, pageUrl)) return false;
+  return String(pending.password || '') === String(password || '');
+}
+
 async function clearPendingCredentials() {
+  pendingCredentials = null;
   await chrome.storage.session.remove(STORAGE_KEY_PENDING_CREDENTIALS);
 }
 
 async function clearAllPendingState() {
+  pendingCredentials = null;
   await chrome.storage.session.remove([
     STORAGE_KEY_PENDING_CREDENTIALS,
     STORAGE_KEY_PENDING_USERNAMES,
@@ -569,7 +625,9 @@ async function handleMessage(message, sender) {
     }
 
     case 'LOGIN': {
-      const data = await api.login(payload.masterPassword);
+      const data = await api.login(payload.masterPassword, {
+        neverAutoLock: await session.isNeverAutoLockMode(),
+      });
       await session.saveToken(data.token);
       await session.resetAutoLock();
       return { success: true };
@@ -665,8 +723,11 @@ async function handleMessage(message, sender) {
     }
 
     case 'EXPORT_VAULT': {
+      if (!payload.masterPassword) {
+        throw new Error('Master password is required for decrypted export');
+      }
       await session.resetAutoLock();
-      return await api.exportVault();
+      return await api.exportVault(payload.masterPassword);
     }
 
     case 'GENERATE_PASSWORD': {
@@ -758,7 +819,7 @@ async function handleMessage(message, sender) {
     case 'GET_EMAIL_SUGGESTIONS': {
       const pageUrl = getMessagePageUrl(payload, sender);
       const emails = await getEmailSuggestionsForPage(pageUrl);
-      return { emails: emails.slice(0, 250) };
+      return { emails };
     }
 
     case 'STORE_DISCOVERED_EMAIL': {
@@ -803,6 +864,10 @@ async function handleMessage(message, sender) {
     }
 
     case 'PENDING_CREDENTIALS': {
+      if (!(await session.isUnlocked())) {
+        return { stored: false };
+      }
+
       const pageUrl = getMessagePageUrl(payload, sender);
       if (!isCredentialPageAllowed(pageUrl)) {
         return { stored: false };
@@ -812,23 +877,30 @@ async function handleMessage(message, sender) {
       const domain = getDomainFromUrl(pageUrl);
       const username = payload.username || await getPendingUsername(domain) || '';
       return {
-        stored: await setPendingCredentials({
-          ...payload,
-          url: credentialUrl,
-          domain,
-          username,
-        }),
+        stored: await setPendingCredentials(
+          {
+            ...payload,
+            url: credentialUrl,
+            domain,
+            username,
+          },
+          sender
+        ),
       };
     }
 
     case 'CHECK_PENDING_CREDENTIALS': {
+      if (!(await session.isUnlocked())) {
+        return { hasPending: false };
+      }
+
       const pageUrl = getMessagePageUrl(payload, sender);
       if (!isCredentialPageAllowed(pageUrl)) {
         return { hasPending: false };
       }
 
       const domain = getDomainFromUrl(pageUrl);
-      const pending = await getPendingCredentials(domain);
+      const pending = await getPendingCredentials(domain, sender);
       if (!pending || !isCredentialAllowedForPage({ website_url: pending.url }, pageUrl)) {
         return { hasPending: false };
       }
@@ -858,10 +930,18 @@ async function handleMessage(message, sender) {
         return { saved: false };
       }
 
-      const { username, password } = payload;
+      const { username } = payload;
+      const password = String(payload.password || '');
       const pageUrl = getMessagePageUrl(payload, sender);
       if (!isCredentialPageAllowed(pageUrl)) {
         return { saved: false };
+      }
+      if (!password) {
+        return {
+          saved: false,
+          reason: 'missing_password',
+          message: 'No password was detected to save.',
+        };
       }
 
       await session.resetAutoLock();
@@ -873,6 +953,16 @@ async function handleMessage(message, sender) {
 
       const existing = (await api.listEntries(domain))
         .filter((entry) => isCredentialAllowedForPage(entry, pageUrl));
+      const pending = isContentScriptSender(sender)
+        ? await getPendingCredentials(domain, sender)
+        : null;
+      if (isContentScriptSender(sender) && !pendingCredentialMatchesSubmission(pending, pageUrl, password)) {
+        return {
+          saved: false,
+          reason: 'missing_pending_credential',
+          message: 'No matching pending password save was found.',
+        };
+      }
       const rememberedUsername = await getPendingUsername(domain);
       const effectiveUsername = String(username || rememberedUsername || '').trim();
       const confirmUpdate = payload.confirmUpdate === true;
@@ -891,6 +981,7 @@ async function handleMessage(message, sender) {
         await api.updateEntry(match.id, { password });
         session.clearCache();
         await clearPendingUsername(domain);
+        await clearPendingCredentials();
         return { saved: true, updated: true };
       }
 
@@ -901,11 +992,13 @@ async function handleMessage(message, sender) {
           await api.updateEntry(match.id, { password });
           session.clearCache();
           await clearPendingUsername(domain);
+          await clearPendingCredentials();
           return { saved: true, updated: true };
         } else {
           await api.createEntry({ website_url: url, username: effectiveUsername, password });
           session.clearCache();
           await clearPendingUsername(domain);
+          await clearPendingCredentials();
           return { saved: true, updated: false };
         }
       } else {
