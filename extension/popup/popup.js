@@ -1,5 +1,10 @@
 const STORAGE_KEY_ENABLE_FAVICONS = 'yurrr_enable_favicons';
 let faviconsEnabledCache = null;
+const discoveredFaviconCache = new Map();
+const FAVICON_DISCOVERY_TIMEOUT_MS = 3500;
+const MAX_DISCOVERED_FAVICON_CANDIDATES = 12;
+const SAFE_FAVICON_DATA_URL_PATTERN =
+  /^data:image\/(svg\+xml|ico|x-icon|vnd\.microsoft\.icon|png|jpe?g|webp|gif|avif|bmp);base64,[a-z0-9+/=]+$/i;
 
 async function areFaviconsEnabled() {
   if (faviconsEnabledCache !== null) return faviconsEnabledCache;
@@ -15,6 +20,310 @@ async function areFaviconsEnabled() {
 }
 
 window.areFaviconsEnabled = areFaviconsEnabled;
+
+function parseHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeFaviconPageUrl(websiteUrl, domain) {
+  const rawUrl = String(websiteUrl || '').trim();
+  if (rawUrl) {
+    const direct = parseHttpUrl(rawUrl);
+    if (direct) return direct;
+
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(rawUrl)) {
+      const inferred = parseHttpUrl(`https://${rawUrl}`);
+      if (inferred) return inferred;
+    }
+  }
+
+  const rawDomain = String(domain || '').trim();
+  if (!rawDomain) return '';
+
+  return parseHttpUrl(rawDomain) || parseHttpUrl(`https://${rawDomain}`);
+}
+
+function normalizeFaviconRootUrl(pageUrl) {
+  try {
+    const url = new URL(pageUrl);
+    url.pathname = '/';
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+function getBrowserFaviconUrl(websiteUrl, domain, size = 64) {
+  const pageUrl = normalizeFaviconPageUrl(websiteUrl, domain);
+  const runtime = globalThis.chrome?.runtime;
+  if (!pageUrl || typeof runtime?.getURL !== 'function') return '';
+
+  const faviconUrl = new URL(runtime.getURL('/_favicon/'));
+  faviconUrl.searchParams.set('pageUrl', pageUrl);
+  faviconUrl.searchParams.set('size', String(size));
+  return faviconUrl.href;
+}
+
+window.getBrowserFaviconUrl = getBrowserFaviconUrl;
+
+function parseFaviconSizes(value) {
+  return String(value || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((size) => {
+      if (size.toLowerCase() === 'any') return { any: true };
+      const match = size.match(/^(\d{1,4})x(\d{1,4})$/i);
+      if (!match) return null;
+      const width = Number.parseInt(match[1], 10);
+      const height = Number.parseInt(match[2], 10);
+      if (!width || !height) return null;
+      return { width, height };
+    })
+    .filter(Boolean);
+}
+
+function faviconSizeScore(sizes) {
+  if (sizes.some((size) => size.any)) return 0;
+  if (!sizes.length) return 80;
+
+  return Math.min(...sizes.map((size) => {
+    const side = Math.max(size.width, size.height);
+    const shapePenalty = Math.abs(size.width - size.height) * 2;
+    const sizePenalty = side >= 64 ? side - 64 : (64 - side) * 4;
+    return shapePenalty + sizePenalty;
+  }));
+}
+
+function faviconTypeScore(type) {
+  const value = String(type || '').split(';')[0].trim().toLowerCase();
+  if (value === 'image/svg+xml') return 0;
+  if (['image/png', 'image/webp', 'image/avif'].includes(value)) return 2;
+  if (['image/jpeg', 'image/jpg', 'image/gif', 'image/bmp'].includes(value)) return 8;
+  if (['image/x-icon', 'image/vnd.microsoft.icon', 'image/ico'].includes(value)) return 12;
+  if (value.startsWith('image/')) return 15;
+  return 10;
+}
+
+function addFaviconCandidate(candidates, baseUrl, href, source, attrs = {}, order = 0) {
+  if (!href) return;
+
+  try {
+    const url = new URL(href, baseUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+    candidates.push({
+      href: url.href,
+      source,
+      sizes: parseFaviconSizes(attrs.sizes),
+      type: attrs.type || '',
+      order,
+    });
+  } catch {
+    // Ignore invalid favicon URLs.
+  }
+}
+
+function faviconSourceScore(source) {
+  if (source === 'html-icon') return 0;
+  if (source === 'manifest') return 5;
+  if (source === 'apple-touch') return 20;
+  return 35;
+}
+
+function sortFaviconCandidates(candidates) {
+  const bestByUrl = new Map();
+  for (const candidate of candidates) {
+    const score = faviconSizeScore(candidate.sizes)
+      + faviconSourceScore(candidate.source)
+      + faviconTypeScore(candidate.type);
+    const existing = bestByUrl.get(candidate.href);
+    if (
+      !existing ||
+      score < existing.score ||
+      (score === existing.score && candidate.order < existing.order)
+    ) {
+      bestByUrl.set(candidate.href, { ...candidate, score });
+    }
+  }
+
+  return Array.from(bestByUrl.values())
+    .sort((a, b) => (a.score - b.score) || (a.order - b.order))
+    .slice(0, MAX_DISCOVERED_FAVICON_CANDIDATES)
+    .map((candidate) => candidate.href);
+}
+
+async function fetchTextWithTimeout(url, timeoutMs = FAVICON_DISCOVERY_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      cache: 'force-cache',
+      credentials: 'omit',
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    if (!response.ok) return { url, text: '', contentType: '' };
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    return { url: response.url || url, text, contentType };
+  } catch {
+    return { url, text: '', contentType: '' };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function discoverFaviconCandidates(websiteUrl, domain) {
+  const pageUrl = normalizeFaviconPageUrl(websiteUrl, domain);
+  const rootUrl = normalizeFaviconRootUrl(pageUrl);
+  if (!pageUrl || !rootUrl) return [];
+
+  const cacheKey = rootUrl;
+  if (discoveredFaviconCache.has(cacheKey)) {
+    return discoveredFaviconCache.get(cacheKey);
+  }
+
+  const discovery = (async () => {
+    const candidates = [];
+    let order = 0;
+
+    for (const path of [
+      '/favicon.svg',
+      '/favicon.png',
+      '/favicon.ico',
+      '/apple-touch-icon.png',
+      '/apple-touch-icon-precomposed.png',
+    ]) {
+      addFaviconCandidate(candidates, rootUrl, path, 'common', {}, order++);
+    }
+
+    const htmlPages = Array.from(new Set([pageUrl, rootUrl]));
+    const seenManifests = new Set();
+
+    for (const htmlUrl of htmlPages) {
+      const page = await fetchTextWithTimeout(htmlUrl);
+      const isHtml = !page.contentType ||
+        /(?:text\/html|application\/xhtml\+xml)/i.test(page.contentType);
+
+      if (!page.text || !isHtml || typeof DOMParser !== 'function') {
+        continue;
+      }
+
+      const doc = new DOMParser().parseFromString(page.text, 'text/html');
+      const baseUrl = page.url || htmlUrl;
+      const manifests = [];
+
+      doc.querySelectorAll('link[rel][href]').forEach((link) => {
+        const rel = String(link.getAttribute('rel') || '').toLowerCase().split(/\s+/);
+        const href = link.getAttribute('href') || '';
+        const attrs = {
+          sizes: link.getAttribute('sizes') || '',
+          type: link.getAttribute('type') || '',
+        };
+
+        if (rel.includes('manifest')) {
+          try {
+            const manifestUrl = new URL(href, baseUrl);
+            if (
+              (manifestUrl.protocol === 'http:' || manifestUrl.protocol === 'https:') &&
+              !seenManifests.has(manifestUrl.href)
+            ) {
+              seenManifests.add(manifestUrl.href);
+              manifests.push(manifestUrl.href);
+            }
+          } catch {
+            // Ignore invalid manifest URLs.
+          }
+        }
+
+        if (rel.includes('icon')) {
+          addFaviconCandidate(candidates, baseUrl, href, 'html-icon', attrs, order++);
+          return;
+        }
+
+        if (rel.includes('apple-touch-icon') || rel.includes('apple-touch-icon-precomposed')) {
+          addFaviconCandidate(candidates, baseUrl, href, 'apple-touch', attrs, order++);
+        }
+      });
+
+      for (const manifestUrl of manifests.slice(0, 2)) {
+        const manifest = await fetchTextWithTimeout(manifestUrl);
+        if (!manifest.text) continue;
+
+        try {
+          const parsed = JSON.parse(manifest.text);
+          const icons = Array.isArray(parsed.icons) ? parsed.icons : [];
+          icons.forEach((icon) => {
+            addFaviconCandidate(
+              candidates,
+              manifest.url || manifestUrl,
+              icon?.src,
+              'manifest',
+              {
+                sizes: icon?.sizes || '',
+                type: icon?.type || '',
+              },
+              order++
+            );
+          });
+        } catch {
+          // Ignore malformed manifests.
+        }
+      }
+    }
+
+    return sortFaviconCandidates(candidates);
+  })();
+
+  discoveredFaviconCache.set(cacheKey, discovery);
+  return discovery;
+}
+
+async function loadDiscoveredFaviconImage(websiteUrl, domain) {
+  const candidates = await discoverFaviconCandidates(websiteUrl, domain);
+  for (const src of candidates) {
+    try {
+      return await loadPopupFaviconImage(src);
+    } catch {
+      // Try the next discovered favicon candidate.
+    }
+  }
+  throw new Error('No discovered favicon loaded');
+}
+
+window.loadDiscoveredFaviconImage = loadDiscoveredFaviconImage;
+
+function isSafeFaviconDataUrl(dataUrl) {
+  return SAFE_FAVICON_DATA_URL_PATTERN.test(String(dataUrl || ''));
+}
+
+window.isSafeFaviconDataUrl = isSafeFaviconDataUrl;
+
+function loadPopupFaviconImage(src) {
+  return new Promise((resolve, reject) => {
+    if (!src) {
+      reject(new Error('Missing favicon source'));
+      return;
+    }
+
+    const img = document.createElement('img');
+    img.alt = '';
+    img.decoding = 'async';
+    img.referrerPolicy = 'no-referrer';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load favicon'));
+    img.src = src;
+  });
+}
+
+window.loadPopupFaviconImage = loadPopupFaviconImage;
 
 // Utility: Send message to service worker
 async function sendMessage(type, payload = {}) {
@@ -1495,6 +1804,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
   if (areaName === 'local' && changes[STORAGE_KEY_ENABLE_FAVICONS]) {
     faviconsEnabledCache = changes[STORAGE_KEY_ENABLE_FAVICONS].newValue !== false;
+    discoveredFaviconCache.clear();
   }
 });
 

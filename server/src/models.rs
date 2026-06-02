@@ -128,6 +128,7 @@ pub struct EntryDetail {
     pub password: String,
     pub notes: Option<String>,
     pub favorite: bool,
+    pub has_favicon: bool,
     pub created_at: String,
     pub updated_at: String,
 }

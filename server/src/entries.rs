@@ -243,6 +243,13 @@ pub async fn get_entry(
         .execute(&state.db)
         .await?;
 
+    let has_favicon =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM favicons WHERE domain = ?)")
+            .bind(&entry.website_domain)
+            .fetch_one(&state.db)
+            .await?
+            != 0;
+
     Ok(Json(EntryDetail {
         id: entry.id,
         website_url: entry.website_url,
@@ -251,6 +258,7 @@ pub async fn get_entry(
         password,
         notes,
         favorite: entry.favorite != 0,
+        has_favicon,
         created_at: entry.created_at,
         updated_at: entry.updated_at,
     }))

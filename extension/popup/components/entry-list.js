@@ -71,6 +71,8 @@ const EntryList = {
         const domain = e.website_domain || '';
         const initial = domain ? domain.charAt(0).toUpperCase() : '?';
         const entryId = escapeHtml(e.id);
+        const websiteUrl = escapeHtml(e.website_url || '');
+        const hasFavicon = e.has_favicon === true ? 'true' : 'false';
         const username = escapeHtml(e.username || '');
         const icon = window.getPopupIcon ? window.getPopupIcon('trash', 'icon-sm') : '';
         const chevron = window.getPopupIcon ? window.getPopupIcon('chevronRight', 'icon-xs') : '';
@@ -79,7 +81,7 @@ const EntryList = {
         return `
       <div class="entry-item">
         <button class="entry-main" data-id="${entryId}" type="button" aria-label="${label}">
-          <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}">${escapeHtml(initial)}</div>
+          <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}" data-favicon-url="${websiteUrl}" data-has-favicon="${hasFavicon}">${escapeHtml(initial)}</div>
           <div class="entry-info">
             <div class="entry-domain">${escapeHtml(domain)}</div>
             <div class="entry-username">${username}</div>
@@ -177,33 +179,74 @@ const EntryList = {
     }
 
     const iconEls = this.listEl.querySelectorAll('.entry-icon[data-favicon-domain]');
-    const domains = new Set();
-    iconEls.forEach((el) => domains.add(el.dataset.faviconDomain));
-
-    for (const domain of domains) {
+    const faviconsStillEnabled = async () => (
+      !window.areFaviconsEnabled || await window.areFaviconsEnabled()
+    );
+    const canApplyFavicon = async (el) => (
+      this.listEl.contains(el) && await faviconsStillEnabled()
+    );
+    const serverFallbacks = new Map();
+    const getServerFallback = async (domain) => {
       if (!domain) {
-        continue;
+        return null;
       }
+      if (!(await faviconsStillEnabled())) {
+        return null;
+      }
+      if (!serverFallbacks.has(domain)) {
+        serverFallbacks.set(
+          domain,
+          sendMessage('GET_FAVICON', { domain }).catch(() => null)
+        );
+      }
+      return serverFallbacks.get(domain);
+    };
+
+    await Promise.all(Array.from(iconEls).map(async (el) => {
+      const domain = el.dataset.faviconDomain || '';
+      const websiteUrl = el.dataset.faviconUrl || '';
+      const hasServerFavicon = el.dataset.hasFavicon === 'true';
+      let discoveredLoaded = false;
+
+      const browserFaviconUrl = window.getBrowserFaviconUrl?.(websiteUrl, domain);
+      if (browserFaviconUrl) {
+        try {
+          const img = await window.loadPopupFaviconImage(browserFaviconUrl);
+          if (await canApplyFavicon(el)) {
+            el.replaceChildren(img);
+          }
+        } catch {
+          // Try the server-provided favicon below.
+        }
+      }
+
       try {
-        const result = await sendMessage('GET_FAVICON', { domain });
-        if (result && this.isSafeImageDataUrl(result.dataUrl)) {
-          this.listEl
-            .querySelectorAll(`.entry-icon[data-favicon-domain="${CSS.escape(domain)}"]`)
-            .forEach((el) => {
-              const img = document.createElement('img');
-              img.src = result.dataUrl;
-              img.alt = '';
-              el.replaceChildren(img);
-            });
+        const img = await window.loadDiscoveredFaviconImage?.(websiteUrl, domain);
+        if (img) {
+          discoveredLoaded = true;
+          if (await canApplyFavicon(el)) {
+            el.replaceChildren(img);
+          }
+        }
+      } catch {
+        // Fall back to the server-provided favicon below.
+      }
+
+      if (discoveredLoaded && !hasServerFavicon) {
+        return;
+      }
+
+      try {
+        const result = await getServerFallback(domain);
+        if (result && window.isSafeFaviconDataUrl?.(result.dataUrl)) {
+          const img = await window.loadPopupFaviconImage(result.dataUrl);
+          if (await canApplyFavicon(el)) {
+            el.replaceChildren(img);
+          }
         }
       } catch {
         // Keep letter fallback
       }
-    }
-  },
-
-  isSafeImageDataUrl(dataUrl) {
-    return /^data:image\/(png|jpe?g|webp|gif|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=]+$/i
-      .test(String(dataUrl || ''));
+    }));
   },
 };

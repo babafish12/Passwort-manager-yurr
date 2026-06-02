@@ -1,13 +1,24 @@
 # Yurrr Password Manager
 
-Yurrr is a self-hosted password manager for a local server and a Brave/Chrome
-extension. The server runs on your own machine, for example a Raspberry Pi, and
-stores the vault in SQLite. The browser extension talks to the server over
-HTTPS and provides the popup UI, autofill, password generation, import/export,
-and signup email suggestions.
+Yurrr is a self-hosted password manager for a local Rust server and a
+Brave/Chrome extension. It is built for a private setup: the vault lives on your
+own machine, the browser extension talks to it over HTTPS, and there is no
+hosted sync service in the middle.
 
-This project is built for a private, self-hosted setup. It is not a hosted cloud
-service and does not sync through a third-party provider.
+The server stores encrypted secrets in SQLite. The extension provides the
+day-to-day UI: unlock, search, copy, autofill, generate passwords, import CSV
+exports, export the vault, and manage cards, addresses, and passkey metadata.
+
+## At a glance
+
+| Area | What Yurrr does |
+| --- | --- |
+| Hosting | Runs on your own Linux machine, including Raspberry Pi. |
+| Browser | Manifest V3 extension for Brave and Chrome. |
+| Storage | SQLite database on local disk. |
+| Crypto | Argon2id master-password hashing and AES-256-GCM encrypted secrets. |
+| Network | HTTPS API with generated self-signed certificates by default. |
+| Privacy | No cloud sync; optional server-side favicon fetching stays disabled unless enabled. |
 
 ## Contents
 
@@ -15,6 +26,7 @@ service and does not sync through a third-party provider.
 - [Architecture](#architecture)
 - [Security model](#security-model)
 - [Requirements](#requirements)
+- [Quick start](#quick-start)
 - [Installation](#installation)
 - [Browser extension setup](#browser-extension-setup)
 - [First use](#first-use)
@@ -49,7 +61,8 @@ service and does not sync through a third-party provider.
   - Lock when the laptop locks.
   - Lock after inactivity.
   - Never auto-lock until manual lock, password change, or server restart.
-- Favicon support with privacy controls.
+- Three-stage favicon support: browser cache, direct website discovery, then
+  cached server fallback.
 - CORS restrictions for extension and local/private origins.
 - HTTPS by default with generated self-signed certificates.
 - WAL-aware update script with database backup support.
@@ -170,6 +183,36 @@ Optional tools:
 - `ufw` or your firewall tool if the server has a firewall enabled.
 - Tailscale if you want private remote access without exposing the server to the
   public internet.
+
+## Quick start
+
+This is the shortest working path for a local development or first self-hosted
+setup. Use the detailed sections below when moving the server to a Raspberry Pi,
+systemd service, LAN address, or Tailscale address.
+
+```bash
+git clone https://github.com/babafish12/Passwort-manager-yurr.git yurrr
+cd yurrr/server
+cargo run --release
+```
+
+Then open this URL in Brave/Chrome and accept the generated certificate for the
+exact host you will use in the extension:
+
+```text
+https://localhost:8443/api/v1/auth/status
+```
+
+Load the extension:
+
+1. Open `brave://extensions` or `chrome://extensions`.
+2. Enable developer mode.
+3. Select `Load unpacked`.
+4. Choose the repository's `extension/` directory.
+5. Open the Yurrr options page and set the server URL to
+   `https://localhost:8443`.
+
+Create the vault from the popup, then add or import passwords.
 
 ## Installation
 
@@ -410,6 +453,22 @@ Email suggestions are managed in the options page:
 The extension caps visible suggestions and does not show them on a website that
 already has a saved account in the vault.
 
+### Website favicons
+
+Favicon display is enabled by default and can be turned off in the options page.
+When enabled, the popup tries icons in this order:
+
+1. The browser's own favicon cache through the Manifest V3 `_favicon` API.
+2. Direct website discovery from the saved URL and domain root, including
+   `rel="icon"`, Apple touch icons, web manifests, SVG icons, PNG/WebP/ICO
+   icons, and common paths such as `/favicon.ico`.
+3. The server's cached `/api/v1/favicons/{domain}` response.
+
+The server does not fetch favicons from websites by default. Server-side
+favicon fetching is controlled separately with
+`YURRR_ENABLE_THIRD_PARTY_FAVICONS=true`. Keep that disabled if you do not want
+the server to make network requests for saved domains.
+
 ### Import passwords
 
 Open the options page and use `Import Passwords`.
@@ -480,7 +539,7 @@ Manual lock is always available from the popup.
 | `YURRR_JWT_EXPIRY_HOURS` | `24` | Normal JWT max age in hours. Ignored for `Never auto-lock` sessions. |
 | `YURRR_INACTIVITY_TIMEOUT_MINUTES` | `240` | Server-side inactivity timeout for normal sessions. Ignored for `Never auto-lock` sessions. |
 | `YURRR_CORS_ALLOWED_ORIGINS` | unset | Comma-separated exact-origin allowlist. If unset, extension origins and local/private HTTP(S) origins are allowed. |
-| `YURRR_ENABLE_THIRD_PARTY_FAVICONS` | `false` | Allows server-side favicon fetching for saved domains. |
+| `YURRR_ENABLE_THIRD_PARTY_FAVICONS` | `false` | Allows the server fallback to fetch favicons for saved domains. Popup browser/website discovery works without this. |
 
 ### Update script environment variables
 
@@ -688,6 +747,21 @@ not match the page.
 Yurrr intentionally hides email suggestions when the current website already has
 a saved account. Suggestions also require an unlocked vault when they depend on
 vault usernames.
+
+### Favicons are missing
+
+- Reload the extension after pulling new code because Manifest V3 permission
+  changes are read only when the extension reloads.
+- Confirm `Show website favicons in the popup` is enabled in the options page.
+- Open the site once in Brave/Chrome. The popup uses the browser favicon cache
+  as its fastest source.
+- If the browser cache does not have a good icon, the popup attempts direct
+  website discovery from the saved URL and the domain root.
+- Server-side favicon fetching is optional. Set
+  `YURRR_ENABLE_THIRD_PARTY_FAVICONS=true` only if you also want the server
+  fallback to fetch and cache icons for saved domains.
+- Some sites block extension-origin requests or require authenticated page
+  state. Those entries fall back to the letter icon.
 
 ### Import fails
 

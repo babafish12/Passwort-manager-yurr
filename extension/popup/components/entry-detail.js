@@ -75,7 +75,7 @@ const EntryDetail = {
 
       this.domainEl.textContent = entry.website_domain;
       this.faviconEl.innerHTML = '';
-      this.loadDetailFavicon(entry.website_domain);
+      this.loadDetailFavicon(entry);
       this.urlEl.textContent = entry.website_url;
       this.usernameEl.textContent = entry.username;
       this.passwordEl.textContent = '\u2022'.repeat(12);
@@ -245,18 +245,65 @@ const EntryDetail = {
     }
   },
 
-  async loadDetailFavicon(domain) {
+  async loadDetailFavicon(entry) {
+    if (window.areFaviconsEnabled && !(await window.areFaviconsEnabled())) {
+      return;
+    }
+
+    const entryId = entry?.id;
+    const domain = entry?.website_domain || '';
+    const websiteUrl = entry?.website_url || '';
+    const hasServerFavicon = entry?.has_favicon === true;
+    let discoveredLoaded = false;
+    const isCurrentEntry = () => (
+      this.currentEntry?.id === entryId &&
+      this.currentEntry?.website_domain === domain &&
+      this.currentEntry?.website_url === websiteUrl
+    );
+    const canApplyFavicon = async () => (
+      isCurrentEntry() &&
+      (!window.areFaviconsEnabled || await window.areFaviconsEnabled())
+    );
+
+    const browserFaviconUrl = window.getBrowserFaviconUrl?.(websiteUrl, domain);
+    if (browserFaviconUrl) {
+      try {
+        const img = await window.loadPopupFaviconImage(browserFaviconUrl);
+        if (await canApplyFavicon()) {
+          this.faviconEl.replaceChildren(img);
+        }
+      } catch {
+        // Try the server-provided favicon below.
+      }
+    }
+
+    try {
+      const img = await window.loadDiscoveredFaviconImage?.(websiteUrl, domain);
+      if (img) {
+        discoveredLoaded = true;
+        if (await canApplyFavicon()) {
+          this.faviconEl.replaceChildren(img);
+        }
+      }
+    } catch {
+      // Fall back to the server-provided favicon below.
+    }
+
+    if (discoveredLoaded && !hasServerFavicon) {
+      return;
+    }
+
     try {
       const result = await sendMessage('GET_FAVICON', { domain });
       if (
         result &&
-        this.currentEntry?.website_domain === domain &&
-        this.isSafeImageDataUrl(result.dataUrl)
+        await canApplyFavicon() &&
+        window.isSafeFaviconDataUrl?.(result.dataUrl)
       ) {
-        const img = document.createElement('img');
-        img.src = result.dataUrl;
-        img.alt = '';
-        this.faviconEl.replaceChildren(img);
+        const img = await window.loadPopupFaviconImage(result.dataUrl);
+        if (await canApplyFavicon()) {
+          this.faviconEl.replaceChildren(img);
+        }
       }
     } catch {
       // No favicon available
@@ -284,11 +331,6 @@ const EntryDetail = {
     }
 
     return parseHttpUrl(`https://${raw}`) || 'about:blank';
-  },
-
-  isSafeImageDataUrl(dataUrl) {
-    return /^data:image\/(png|jpe?g|webp|gif|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=]+$/i
-      .test(String(dataUrl || ''));
   },
 
   async handleDelete() {
