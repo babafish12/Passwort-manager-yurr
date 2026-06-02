@@ -23,7 +23,7 @@ const EntryList = {
       window.animatePopupScreen?.(this.screen, 'back');
     }
     this.searchInput.value = '';
-    this.focusSearchInput();
+    this.renderLoadingState('Loading passwords...');
 
     try {
       this.entries = Array.isArray(initialEntries) ? initialEntries : await sendMessage('LIST_ENTRIES');
@@ -74,35 +74,28 @@ const EntryList = {
         const username = escapeHtml(e.username || '');
         const icon = window.getPopupIcon ? window.getPopupIcon('trash', 'icon-sm') : '';
         const chevron = window.getPopupIcon ? window.getPopupIcon('chevronRight', 'icon-xs') : '';
+        const label = escapeHtml(`Open password for ${domain || username || 'entry'}`);
+        const deleteLabel = escapeHtml(`Delete password for ${domain || username || 'entry'}`);
         return `
-      <div class="entry-item" data-id="${entryId}" role="button" tabindex="0">
-        <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}">${escapeHtml(initial)}</div>
-        <div class="entry-info">
-          <div class="entry-domain">${escapeHtml(domain)}</div>
-          <div class="entry-username">${username}</div>
-        </div>
-        <button class="mini-icon-btn danger" data-entry-delete="${entryId}" title="Delete" aria-label="Delete password" type="button">${icon}</button>
-        <span class="entry-chevron">${chevron}</span>
+      <div class="entry-item">
+        <button class="entry-main" data-id="${entryId}" type="button" aria-label="${label}">
+          <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}">${escapeHtml(initial)}</div>
+          <div class="entry-info">
+            <div class="entry-domain">${escapeHtml(domain)}</div>
+            <div class="entry-username">${username}</div>
+          </div>
+          <span class="entry-chevron" aria-hidden="true">${chevron}</span>
+        </button>
+        <button class="mini-icon-btn danger" data-entry-delete="${entryId}" title="Delete" aria-label="${deleteLabel}" type="button">${icon}</button>
       </div>
     `;
       })
       .join('');
 
     // Click handlers
-    this.listEl.querySelectorAll('.entry-item').forEach((el) => {
-      const openEntry = () => {
+    this.listEl.querySelectorAll('.entry-main[data-id]').forEach((el) => {
+      el.addEventListener('click', () => {
         EntryDetail.show(el.dataset.id);
-      };
-
-      el.addEventListener('click', (event) => {
-        if (event.target.closest('[data-entry-delete]')) return;
-        openEntry();
-      });
-
-      el.addEventListener('keydown', (event) => {
-        if ((event.key !== 'Enter' && event.key !== ' ') || event.target.closest('[data-entry-delete]')) return;
-        event.preventDefault();
-        openEntry();
       });
     });
 
@@ -123,6 +116,17 @@ const EntryList = {
     empty.className = 'empty-state';
     empty.textContent = message;
     this.listEl.replaceChildren(empty);
+  },
+
+  renderLoadingState(message = 'Loading...') {
+    this.listEl.innerHTML = `
+      <div class="list-skeleton" role="status" aria-live="polite" aria-label="${escapeHtml(message)}">
+        <div class="list-skeleton-line"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>
+    `;
   },
 
   focusSearchInput() {

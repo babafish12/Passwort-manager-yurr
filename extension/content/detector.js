@@ -1057,14 +1057,18 @@ const YurrrDetector = {
 
       if (response.hasPending) {
         const { url, username, password } = response.credentials;
-        this.showSaveBanner(url, username, password, domain);
+        this.showSaveBanner(url, username, password, domain, {
+          action: response.credentials.action,
+          entryId: response.credentials.entryId,
+          message: response.credentials.message,
+        });
       }
     } catch {
       // Silent fail
     }
   },
 
-  showSaveBanner(url, username, password, domain = window.location.hostname) {
+  showSaveBanner(url, username, password, domain = window.location.hostname, options = {}) {
     if (this.saveBannerCleanup) {
       this.saveBannerCleanup(false);
     } else {
@@ -1074,12 +1078,14 @@ const YurrrDetector = {
 
     const banner = document.createElement('div');
     banner.id = 'yurrr-save-banner';
+    const initialMessage = options.message || `Save password for ${domain}?`;
+    const initialButtonLabel = options.action === 'update' ? 'Update' : 'Save';
     banner.innerHTML = `
       <div class="yurrr-banner-text">
-        <strong>Yurrr</strong> &mdash; Save password for <strong>${this.escapeHtml(domain)}</strong>?
+        <strong>Yurrr</strong> &mdash; ${this.escapeHtml(initialMessage)}
       </div>
       <div class="yurrr-banner-actions">
-        <button class="yurrr-banner-save">Save</button>
+        <button class="yurrr-banner-save">${this.escapeHtml(initialButtonLabel)}</button>
         <button class="yurrr-banner-dismiss">Dismiss</button>
       </div>
     `;
@@ -1105,7 +1111,9 @@ const YurrrDetector = {
     const textEl = banner.querySelector('.yurrr-banner-text');
     const saveBtn = banner.querySelector('.yurrr-banner-save');
     const saveBtnOriginalLabel = saveBtn.textContent;
-    let confirmUpdateEntryId = null;
+    let confirmUpdateEntryId = options.action === 'update' && options.entryId
+      ? String(options.entryId)
+      : null;
 
     const setBannerMessage = (message, isError = false) => {
       textEl.innerHTML = `<strong>Yurrr</strong> &mdash; ${this.escapeHtml(message)}`;

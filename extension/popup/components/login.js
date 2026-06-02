@@ -7,8 +7,10 @@ const LoginScreen = {
     this.unlockBtn = document.getElementById('unlock-btn');
     this.errorEl = document.getElementById('login-error');
     this.statusDot = document.getElementById('server-status');
+    this.statusText = document.getElementById('server-status-text');
     this.setupSection = document.getElementById('setup-section');
     this.setupBtn = document.getElementById('setup-btn');
+    this.lastStatusOffline = false;
 
     this.unlockBtn.addEventListener('click', () => this.handleUnlock());
     this.passwordInput.addEventListener('keydown', (e) => {
@@ -17,24 +19,63 @@ const LoginScreen = {
     this.setupBtn.addEventListener('click', () => this.handleSetup());
   },
 
-  async show() {
+  async show({
+    animate = true,
+    awaitStatus = false,
+    allowResume = false,
+    allowHiddenResume = false,
+    reveal = true,
+    focus = true,
+  } = {}) {
+    if (reveal) {
+      this.reveal({ animate, focus: false });
+    }
+    this.errorEl.classList.add('hidden');
+    this.passwordInput.value = '';
+    this.setStatus('checking', 'Checking server...');
+    this.setLoginControls('checking');
+
+    const statusCheck = this.checkStatus({ allowResume, allowHiddenResume });
+    const statusResult = awaitStatus ? await statusCheck : null;
+
+    if (reveal && focus && !this.screen.classList.contains('hidden')) {
+      this.focusPasswordInput();
+    }
+    if (reveal && !this.screen.classList.contains('hidden')) {
+      this.startStatusPolling();
+    }
+
+    return awaitStatus ? statusResult : statusCheck;
+  },
+
+  reveal({ animate = true, focus = true } = {}) {
     this.screen.classList.remove('hidden');
-    window.animatePopupScreen?.(this.screen, 'back');
+    if (animate) {
+      window.animatePopupScreen?.(this.screen, 'back');
+    }
     if (this.loginForm) {
       this.loginForm.classList.remove('login-form-animate');
       requestAnimationFrame(() => this.loginForm.classList.add('login-form-animate'));
     }
-    this.errorEl.classList.add('hidden');
-    this.passwordInput.value = '';
-    this.passwordInput.focus();
+    if (focus) {
+      this.focusPasswordInput();
+    }
+  },
 
-    this.checkStatus();
-    this.startStatusPolling();
+  revealPrepared({ animate = true, focus = true } = {}) {
+    this.reveal({ animate, focus });
+    if (!this.screen.classList.contains('hidden')) {
+      this.startStatusPolling();
+    }
+  },
+
+  focusPasswordInput() {
+    this.passwordInput.focus({ preventScroll: true });
   },
 
   startStatusPolling() {
     this.stopStatusPolling();
-    this.statusInterval = setInterval(() => this.checkStatus(), 3000);
+    this.statusInterval = setInterval(() => this.checkStatus({ allowResume: true }), 3000);
   },
 
   stopStatusPolling() {
@@ -49,7 +90,28 @@ const LoginScreen = {
     return result['yurrr_server_url'] || 'https://localhost:8443';
   },
 
-  async checkStatus() {
+  setStatus(state, message) {
+    this.statusDot.classList.toggle('online', state === 'online');
+    this.statusDot.classList.toggle('offline', state === 'offline');
+    if (this.statusText) {
+      this.statusText.textContent = message;
+    }
+  },
+
+  setLoginControls(state) {
+    if (state === 'setup') {
+      this.setupSection.classList.remove('hidden');
+      this.unlockBtn.classList.add('hidden');
+      this.unlockBtn.disabled = false;
+      return;
+    }
+
+    this.setupSection.classList.add('hidden');
+    this.unlockBtn.classList.toggle('hidden', state !== 'unlock');
+    this.unlockBtn.disabled = state !== 'unlock';
+  },
+
+  async checkStatus({ allowResume = true, allowHiddenResume = false } = {}) {
     try {
       // Fetch directly from popup context (not via service worker)
       // so the browser's cert exceptions are respected immediately
@@ -57,21 +119,32 @@ const LoginScreen = {
       const resp = await fetch(`${serverUrl}/api/v1/auth/status`);
       const status = await resp.json();
 
-      this.statusDot.classList.add('online');
-      this.statusDot.classList.remove('offline');
+      this.setStatus('online', status.initialized ? 'Server online. Vault locked.' : 'Server online. Vault setup needed.');
       this.hideCertHint();
 
       if (!status.initialized) {
-        this.setupSection.classList.remove('hidden');
-        this.unlockBtn.classList.add('hidden');
+        this.setLoginControls('setup');
       } else {
-        this.setupSection.classList.add('hidden');
-        this.unlockBtn.classList.remove('hidden');
+        this.setLoginControls('unlock');
+        if (allowResume && !this.passwordInput.value) {
+          const resumed = await window.tryResumeUnlockedSession?.({
+            showToast: this.lastStatusOffline,
+            allowHidden: allowHiddenResume,
+          });
+          if (resumed) {
+            this.lastStatusOffline = false;
+            return { online: true, initialized: true, resumed: true };
+          }
+        }
       }
+      this.lastStatusOffline = false;
+      return { online: true, initialized: status.initialized, resumed: false };
     } catch {
-      this.statusDot.classList.add('offline');
-      this.statusDot.classList.remove('online');
+      this.setStatus('offline', 'Server offline. Check connection or certificate.');
+      this.setLoginControls('unlock');
       this.showCertHint();
+      this.lastStatusOffline = true;
+      return { online: false, initialized: null, resumed: false };
     }
   },
 

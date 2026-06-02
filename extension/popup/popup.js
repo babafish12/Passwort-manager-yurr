@@ -189,6 +189,9 @@ window.animatePopupScreen = animatePopupScreen;
 let toastDismissTimer = null;
 let toastRemoveTimer = null;
 let sessionLossInProgress = false;
+let resumeUnlockedSessionInProgress = false;
+let sessionInvalidToastShown = false;
+let startupComplete = false;
 
 function isSessionLostError(err) {
   return err?.code === 'SESSION_LOST';
@@ -212,6 +215,44 @@ async function handleSessionLoss(err) {
   showToast(err?.message || 'Verbindung verloren. Bitte erneut anmelden.', 'error');
   sessionLossInProgress = false;
 }
+
+async function showUnlockedVault() {
+  LoginScreen.hide();
+  hideAllScreens();
+  document.getElementById('lock-btn').classList.remove('hidden');
+  await VaultSections.setActiveTab(VaultSections.activeTab || 'passwords');
+}
+
+async function tryResumeUnlockedSession({ showToast: shouldShowToast = true, allowHidden = false } = {}) {
+  if (resumeUnlockedSessionInProgress) return false;
+  if (!allowHidden && document.getElementById('login-screen')?.classList.contains('hidden')) return false;
+  if (document.getElementById('master-password')?.value) return false;
+
+  resumeUnlockedSessionInProgress = true;
+  try {
+    const result = await sendMessage('IS_UNLOCKED');
+    if (result.unlocked && result.reachable !== false) {
+      await showUnlockedVault();
+      if (shouldShowToast && startupComplete) {
+        showToast('Reconnected to server');
+      }
+      return true;
+    }
+
+    if (!result.unlocked && result.reason === 'session_invalid' && !sessionInvalidToastShown) {
+      sessionInvalidToastShown = true;
+      showToast('Session expired. Please log in again.', 'error');
+    }
+  } catch {
+    // LoginScreen status polling keeps showing connection state.
+  } finally {
+    resumeUnlockedSessionInProgress = false;
+  }
+
+  return false;
+}
+
+window.tryResumeUnlockedSession = tryResumeUnlockedSession;
 
 // Utility: HTML escape
 function escapeHtml(str) {
@@ -267,6 +308,37 @@ function truncateText(value, maxLength = 42) {
   return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
+function getFocusableElements(container) {
+  return Array.from(container.querySelectorAll(
+    'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+  )).filter((el) => !el.disabled && !el.hasAttribute('hidden') && el.offsetParent !== null);
+}
+
+function trapDialogFocus(container, event) {
+  if (event.key !== 'Tab') return;
+
+  const focusable = getFocusableElements(container);
+  if (!focusable.length) {
+    event.preventDefault();
+    container.focus();
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+    return;
+  }
+
+  if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function showConfirmDialog({
   title = 'Confirm',
   message = '',
@@ -276,6 +348,7 @@ function showConfirmDialog({
   confirmIcon = 'check',
 } = {}) {
   return new Promise((resolve) => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const titleId = `confirm-title-${Date.now()}`;
     const messageId = `confirm-message-${Date.now()}`;
     const overlay = document.createElement('div');
@@ -301,13 +374,16 @@ function showConfirmDialog({
     const close = (value) => {
       overlay.removeEventListener('keydown', onKeydown);
       overlay.remove();
+      if (previousFocus?.isConnected) previousFocus.focus();
       resolve(value);
     };
 
     const onKeydown = (event) => {
       if (event.key === 'Escape') {
         close(false);
+        return;
       }
+      trapDialogFocus(overlay, event);
     };
 
     const cancel = () => close(false);
@@ -333,6 +409,11 @@ function showConfirmDialog({
 window.showConfirmDialog = showConfirmDialog;
 window.truncateText = truncateText;
 
+function hideBootScreen() {
+  document.getElementById('boot-screen')?.classList.add('hidden');
+  document.getElementById('app')?.setAttribute('data-boot-state', 'ready');
+}
+
 const VaultSections = {
   activeTab: 'passwords',
   LOCAL_STORAGE_KEYS: {
@@ -356,11 +437,48 @@ const VaultSections = {
     this.passkeysBtn = document.getElementById('section-passkeys');
     this.cardsBtn = document.getElementById('section-cards');
     this.addressesBtn = document.getElementById('section-addresses');
+    this.sectionTabs = [
+      { tab: 'passwords', button: this.passwordsBtn },
+      { tab: 'passkeys', button: this.passkeysBtn },
+      { tab: 'cards', button: this.cardsBtn },
+      { tab: 'addresses', button: this.addressesBtn },
+    ];
 
     this.passwordsBtn.addEventListener('click', () => this.setActiveTab('passwords'));
     this.passkeysBtn.addEventListener('click', () => this.setActiveTab('passkeys'));
     this.cardsBtn.addEventListener('click', () => this.setActiveTab('cards'));
     this.addressesBtn.addEventListener('click', () => this.setActiveTab('addresses'));
+    this.sectionTabs.forEach(({ button }) => {
+      button.addEventListener('keydown', (event) => this.handleTabKeydown(event));
+    });
+  },
+
+  handleTabKeydown(event) {
+    const keyMap = {
+      ArrowRight: 1,
+      ArrowDown: 1,
+      ArrowLeft: -1,
+      ArrowUp: -1,
+    };
+    const currentIndex = this.sectionTabs.findIndex(({ button }) => button === event.currentTarget);
+    let nextIndex = null;
+
+    if (Object.prototype.hasOwnProperty.call(keyMap, event.key)) {
+      nextIndex = (currentIndex + keyMap[event.key] + this.sectionTabs.length) % this.sectionTabs.length;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = this.sectionTabs.length - 1;
+    }
+
+    if (nextIndex === null || currentIndex === -1) return;
+    event.preventDefault();
+
+    const target = this.sectionTabs[nextIndex];
+    target.button.focus();
+    this.setActiveTab(target.tab).catch((err) => {
+      showToast(`Error: ${err.message}`, 'error');
+    });
   },
 
   isPasswordsTab() {
@@ -371,24 +489,33 @@ const VaultSections = {
     const chips = [this.passwordsBtn, this.passkeysBtn, this.cardsBtn, this.addressesBtn];
     chips.forEach((chip) => {
       chip.classList.remove('section-chip-active');
-      chip.setAttribute('aria-pressed', 'false');
+      chip.setAttribute('aria-selected', 'false');
+      chip.setAttribute('tabindex', '-1');
     });
 
     if (this.activeTab === 'passwords') {
       this.passwordsBtn.classList.add('section-chip-active');
-      this.passwordsBtn.setAttribute('aria-pressed', 'true');
+      this.passwordsBtn.setAttribute('aria-selected', 'true');
+      this.passwordsBtn.setAttribute('tabindex', '0');
+      this.listEl.setAttribute('aria-labelledby', 'section-passwords');
     }
     if (this.activeTab === 'passkeys') {
       this.passkeysBtn.classList.add('section-chip-active');
-      this.passkeysBtn.setAttribute('aria-pressed', 'true');
+      this.passkeysBtn.setAttribute('aria-selected', 'true');
+      this.passkeysBtn.setAttribute('tabindex', '0');
+      this.listEl.setAttribute('aria-labelledby', 'section-passkeys');
     }
     if (this.activeTab === 'cards') {
       this.cardsBtn.classList.add('section-chip-active');
-      this.cardsBtn.setAttribute('aria-pressed', 'true');
+      this.cardsBtn.setAttribute('aria-selected', 'true');
+      this.cardsBtn.setAttribute('tabindex', '0');
+      this.listEl.setAttribute('aria-labelledby', 'section-cards');
     }
     if (this.activeTab === 'addresses') {
       this.addressesBtn.classList.add('section-chip-active');
-      this.addressesBtn.setAttribute('aria-pressed', 'true');
+      this.addressesBtn.setAttribute('aria-selected', 'true');
+      this.addressesBtn.setAttribute('tabindex', '0');
+      this.listEl.setAttribute('aria-labelledby', 'section-addresses');
     }
   },
 
@@ -417,6 +544,7 @@ const VaultSections = {
       : tab === 'passkeys'
         ? 'Search passkeys...'
         : 'Search addresses...';
+    EntryList.renderLoadingState(`Loading ${tab}...`);
     await this.renderCurrentTab();
   },
 
@@ -807,33 +935,27 @@ const VaultSections = {
 
     this.listEl.innerHTML = filtered
       .map(
-        (passkey) => `
-      <div class="entry-item" data-passkey-id="${escapeHtml(passkey.id)}" role="button" tabindex="0">
-        <div class="entry-icon">${getPopupIcon('fingerprint', 'icon-sm')}</div>
-        <div class="entry-info">
-          <div class="entry-domain">${escapeHtml(this.formatPasskeyLabel(passkey))}</div>
-          <div class="entry-username">${escapeHtml(passkey.user_name || passkey.display_name || 'No account')} • ${escapeHtml(passkey.rp_id || 'No RP ID')}</div>
-        </div>
-        <button class="mini-icon-btn danger" data-passkey-delete="${escapeHtml(passkey.id)}" title="Delete" aria-label="Delete passkey" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
-        <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+        (passkey) => {
+          const label = this.formatPasskeyLabel(passkey);
+          return `
+      <div class="entry-item">
+        <button class="entry-main" data-passkey-id="${escapeHtml(passkey.id)}" type="button" aria-label="${escapeHtml(`Open passkey for ${label}`)}">
+          <div class="entry-icon">${getPopupIcon('fingerprint', 'icon-sm')}</div>
+          <div class="entry-info">
+            <div class="entry-domain">${escapeHtml(label)}</div>
+            <div class="entry-username">${escapeHtml(passkey.user_name || passkey.display_name || 'No account')} • ${escapeHtml(passkey.rp_id || 'No RP ID')}</div>
+          </div>
+          <span class="entry-chevron" aria-hidden="true">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+        </button>
+        <button class="mini-icon-btn danger" data-passkey-delete="${escapeHtml(passkey.id)}" title="Delete" aria-label="${escapeHtml(`Delete passkey for ${label}`)}" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
       </div>
-    `
+    `;
+        }
       )
       .join('');
 
-    this.listEl.querySelectorAll('[data-passkey-id]').forEach((el) => {
-      el.addEventListener('click', async (event) => {
-        const deleteBtn = event.target.closest('[data-passkey-delete]');
-        if (deleteBtn) return;
-        try {
-          await this.editPasskey(el.dataset.passkeyId);
-        } catch (err) {
-          showToast(`Error: ${err.message}`, 'error');
-        }
-      });
-      el.addEventListener('keydown', async (event) => {
-        if (!this.isActivationKey(event) || event.target.closest('[data-passkey-delete]')) return;
-        event.preventDefault();
+    this.listEl.querySelectorAll('.entry-main[data-passkey-id]').forEach((el) => {
+      el.addEventListener('click', async () => {
         try {
           await this.editPasskey(el.dataset.passkeyId);
         } catch (err) {
@@ -878,33 +1000,27 @@ const VaultSections = {
 
     this.listEl.innerHTML = filtered
       .map(
-        (card) => `
-      <div class="entry-item" data-card-id="${escapeHtml(card.id)}" role="button" tabindex="0">
-        <div class="entry-icon">${getPopupIcon('creditCard', 'icon-sm')}</div>
-        <div class="entry-info">
-          <div class="entry-domain">${escapeHtml(this.formatBrand(card.brand))} ${escapeHtml(this.formatCardNumberMasked(card.number || card.last4 || ''))}</div>
-          <div class="entry-username">${escapeHtml(card.cardholder_name || 'No cardholder')} • exp ${escapeHtml(String(card.exp_month).padStart(2, '0'))}/${escapeHtml(String(card.exp_year || ''))}</div>
-        </div>
-        <button class="mini-icon-btn danger" data-card-delete="${escapeHtml(card.id)}" title="Delete" aria-label="Delete card" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
-        <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+        (card) => {
+          const cardLabel = `${this.formatBrand(card.brand)} ${this.formatCardNumberMasked(card.number || card.last4 || '')}`;
+          return `
+      <div class="entry-item">
+        <button class="entry-main" data-card-id="${escapeHtml(card.id)}" type="button" aria-label="${escapeHtml(`Open card ${cardLabel}`)}">
+          <div class="entry-icon">${getPopupIcon('creditCard', 'icon-sm')}</div>
+          <div class="entry-info">
+            <div class="entry-domain">${escapeHtml(cardLabel)}</div>
+            <div class="entry-username">${escapeHtml(card.cardholder_name || 'No cardholder')} • exp ${escapeHtml(String(card.exp_month).padStart(2, '0'))}/${escapeHtml(String(card.exp_year || ''))}</div>
+          </div>
+          <span class="entry-chevron" aria-hidden="true">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+        </button>
+        <button class="mini-icon-btn danger" data-card-delete="${escapeHtml(card.id)}" title="Delete" aria-label="${escapeHtml(`Delete card ${cardLabel}`)}" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
       </div>
-    `
+    `;
+        }
       )
       .join('');
 
-    this.listEl.querySelectorAll('[data-card-id]').forEach((el) => {
-      el.addEventListener('click', async (event) => {
-        const deleteBtn = event.target.closest('[data-card-delete]');
-        if (deleteBtn) return;
-        try {
-          await this.editCard(el.dataset.cardId);
-        } catch (err) {
-          showToast(`Error: ${err.message}`, 'error');
-        }
-      });
-      el.addEventListener('keydown', async (event) => {
-        if (!this.isActivationKey(event) || event.target.closest('[data-card-delete]')) return;
-        event.preventDefault();
+    this.listEl.querySelectorAll('.entry-main[data-card-id]').forEach((el) => {
+      el.addEventListener('click', async () => {
         try {
           await this.editCard(el.dataset.cardId);
         } catch (err) {
@@ -949,33 +1065,27 @@ const VaultSections = {
 
     this.listEl.innerHTML = filtered
       .map(
-        (address) => `
-      <div class="entry-item" data-address-id="${escapeHtml(address.id)}" role="button" tabindex="0">
-        <div class="entry-icon">${getPopupIcon('home', 'icon-sm')}</div>
-        <div class="entry-info">
-          <div class="entry-domain">${escapeHtml(address.label || address.full_name || 'Address')}</div>
-          <div class="entry-username">${escapeHtml(address.line1 || '')}, ${escapeHtml(address.city || '')} ${escapeHtml(address.postal_code || '')}</div>
-        </div>
-        <button class="mini-icon-btn danger" data-address-delete="${escapeHtml(address.id)}" title="Delete" aria-label="Delete address" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
-        <span class="entry-chevron">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+        (address) => {
+          const addressLabel = address.label || address.full_name || 'Address';
+          return `
+      <div class="entry-item">
+        <button class="entry-main" data-address-id="${escapeHtml(address.id)}" type="button" aria-label="${escapeHtml(`Open address ${addressLabel}`)}">
+          <div class="entry-icon">${getPopupIcon('home', 'icon-sm')}</div>
+          <div class="entry-info">
+            <div class="entry-domain">${escapeHtml(addressLabel)}</div>
+            <div class="entry-username">${escapeHtml(address.line1 || '')}, ${escapeHtml(address.city || '')} ${escapeHtml(address.postal_code || '')}</div>
+          </div>
+          <span class="entry-chevron" aria-hidden="true">${getPopupIcon('chevronRight', 'icon-xs')}</span>
+        </button>
+        <button class="mini-icon-btn danger" data-address-delete="${escapeHtml(address.id)}" title="Delete" aria-label="${escapeHtml(`Delete address ${addressLabel}`)}" type="button">${getPopupIcon('trash', 'icon-sm')}</button>
       </div>
-    `
+    `;
+        }
       )
       .join('');
 
-    this.listEl.querySelectorAll('[data-address-id]').forEach((el) => {
-      el.addEventListener('click', async (event) => {
-        const deleteBtn = event.target.closest('[data-address-delete]');
-        if (deleteBtn) return;
-        try {
-          await this.editAddress(el.dataset.addressId);
-        } catch (err) {
-          showToast(`Error: ${err.message}`, 'error');
-        }
-      });
-      el.addEventListener('keydown', async (event) => {
-        if (!this.isActivationKey(event) || event.target.closest('[data-address-delete]')) return;
-        event.preventDefault();
+    this.listEl.querySelectorAll('.entry-main[data-address-id]').forEach((el) => {
+      el.addEventListener('click', async () => {
         try {
           await this.editAddress(el.dataset.addressId);
         } catch (err) {
@@ -1270,6 +1380,7 @@ const VaultSections = {
 
   async showEntityForm({ title, fields, submitLabel = 'Save', helper = '' }) {
     return new Promise((resolve) => {
+      const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       const titleId = `entity-modal-title-${Date.now()}`;
       const helperId = `entity-modal-helper-${Date.now()}`;
       const overlay = document.createElement('div');
@@ -1277,17 +1388,18 @@ const VaultSections = {
       overlay.setAttribute('tabindex', '-1');
 
       const formBody = fields
-        .map((field) => {
+        .map((field, index) => {
           const type = field.type || 'text';
           const value = field.value == null ? '' : String(field.value);
           const min = field.min != null ? ` min="${field.min}"` : '';
           const max = field.max != null ? ` max="${field.max}"` : '';
           const required = field.required ? ' required' : '';
           const placeholder = field.placeholder ? ` placeholder="${escapeHtml(field.placeholder)}"` : '';
+          const fieldId = `entity-field-${Date.now()}-${index}-${field.name.replace(/[^a-z0-9_-]/gi, '-')}`;
 
           return `
-            <label class="entity-modal-label">${escapeHtml(field.label)}</label>
-            <input class="entity-modal-input" name="${escapeHtml(field.name)}" type="${escapeHtml(type)}" value="${escapeHtml(value)}"${placeholder}${required}${min}${max}>
+            <label class="entity-modal-label" for="${escapeHtml(fieldId)}">${escapeHtml(field.label)}</label>
+            <input class="entity-modal-input" id="${escapeHtml(fieldId)}" name="${escapeHtml(field.name)}" type="${escapeHtml(type)}" value="${escapeHtml(value)}"${placeholder}${required}${min}${max}>
           `;
         })
         .join('');
@@ -1315,13 +1427,16 @@ const VaultSections = {
       const close = (result = null) => {
         overlay.removeEventListener('keydown', onKeydown);
         overlay.remove();
+        if (previousFocus?.isConnected) previousFocus.focus();
         resolve(result);
       };
 
       const onKeydown = (event) => {
         if (event.key === 'Escape') {
           close(null);
+          return;
         }
+        trapDialogFocus(overlay, event);
       };
 
       overlay.addEventListener('click', (event) => {
@@ -1393,6 +1508,7 @@ document.getElementById('lock-btn').addEventListener('click', async () => {
 });
 
 function hideAllScreens() {
+  hideBootScreen();
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('list-screen').classList.add('hidden');
   document.getElementById('detail-screen').classList.add('hidden');
@@ -1405,21 +1521,53 @@ function hideAllScreens() {
     const result = await sendMessage('IS_UNLOCKED');
     if (result.unlocked) {
       if (result.reachable === false) {
-        LoginScreen.show();
-        showToast('Server not reachable. Check connection or certificate.', 'error');
+        const loginStatus = await LoginScreen.show({
+          animate: false,
+          awaitStatus: true,
+          allowResume: true,
+          allowHiddenResume: true,
+          reveal: false,
+          focus: false,
+        });
+        hideBootScreen();
+        if (loginStatus?.resumed) {
+          return;
+        }
+        LoginScreen.revealPrepared({ animate: false, focus: true });
+        if (!loginStatus?.online) {
+          showToast('Server not reachable. Will reconnect automatically when available.', 'error');
+        }
         return;
       }
 
-      hideAllScreens();
-      document.getElementById('lock-btn').classList.remove('hidden');
-      await VaultSections.setActiveTab('passwords');
+      await showUnlockedVault();
+      hideBootScreen();
     } else {
+      await LoginScreen.show({
+        animate: false,
+        awaitStatus: true,
+        allowResume: false,
+        reveal: false,
+        focus: false,
+      });
+      hideBootScreen();
+      LoginScreen.revealPrepared({ animate: false, focus: true });
       if (result.reason === 'session_invalid') {
+        sessionInvalidToastShown = true;
         showToast('Session expired. Please log in again.', 'error');
       }
-      LoginScreen.show();
     }
   } catch {
-    LoginScreen.show();
+    await LoginScreen.show({
+      animate: false,
+      awaitStatus: true,
+      allowResume: false,
+      reveal: false,
+      focus: false,
+    });
+    hideBootScreen();
+    LoginScreen.revealPrepared({ animate: false, focus: true });
+  } finally {
+    startupComplete = true;
   }
 })();

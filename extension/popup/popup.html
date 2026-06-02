@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div id="app">
+  <div id="app" data-boot-state="booting">
     <div class="header">
       <div class="brand">
         <span class="logo-mark" aria-hidden="true">
@@ -43,10 +43,36 @@
       </div>
     </div>
 
+    <div id="boot-screen" class="screen boot-screen" data-screen="boot" role="status" aria-live="polite" aria-label="Loading Yurrr">
+      <div class="boot-card">
+        <div class="boot-mark" aria-hidden="true">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M8.5 10V7.5a3.5 3.5 0 1 1 7 0V10" />
+            <rect x="5" y="10" width="14" height="10" rx="2" />
+            <path d="M12 14v2.5" />
+          </svg>
+        </div>
+        <div>
+          <div class="boot-title">Opening vault</div>
+          <div class="boot-copy">Checking session and server status...</div>
+        </div>
+      </div>
+      <div class="skeleton-stack" aria-hidden="true">
+        <div class="skeleton-line skeleton-line-wide"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>
+    </div>
+
     <div id="login-screen" class="screen hidden" data-screen="login">
-      <div class="status-dot" id="server-status"></div>
+      <div class="login-status" id="login-status" role="status" aria-live="polite">
+        <span class="status-dot" id="server-status" aria-hidden="true"></span>
+        <span id="server-status-text">Checking server...</span>
+      </div>
       <div class="login-form">
-        <input type="password" id="master-password" placeholder="Master Password" autofocus>
+        <label class="sr-only" for="master-password">Master password</label>
+        <input type="password" id="master-password" placeholder="Master password" autocomplete="current-password" autofocus aria-describedby="server-status-text login-error">
         <button id="unlock-btn" class="btn btn-primary btn-full" type="button">
           <span class="btn-content">
             <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -58,7 +84,7 @@
           </span>
         </button>
       </div>
-      <div id="login-error" class="error hidden"></div>
+      <div id="login-error" class="error hidden" role="alert"></div>
       <div id="setup-section" class="hidden">
         <p class="hint">No vault found. Create one:</p>
         <button id="setup-btn" class="btn btn-secondary btn-full" type="button">
@@ -75,22 +101,23 @@
     </div>
 
     <div id="list-screen" class="screen hidden" data-screen="list">
-      <div class="vault-sections">
-        <button id="section-passwords" class="section-chip section-chip-active" type="button" aria-pressed="true">Passwords</button>
-        <button id="section-passkeys" class="section-chip" type="button" aria-pressed="false">Passkeys</button>
-        <button id="section-cards" class="section-chip" type="button" aria-pressed="false">Cards</button>
-        <button id="section-addresses" class="section-chip" type="button" aria-pressed="false">Addresses</button>
+      <div class="vault-sections" role="tablist" aria-label="Vault sections">
+        <button id="section-passwords" class="section-chip section-chip-active" type="button" role="tab" aria-selected="true" aria-controls="entry-list">Passwords</button>
+        <button id="section-passkeys" class="section-chip" type="button" role="tab" aria-selected="false" aria-controls="entry-list">Passkeys</button>
+        <button id="section-cards" class="section-chip" type="button" role="tab" aria-selected="false" aria-controls="entry-list">Cards</button>
+        <button id="section-addresses" class="section-chip" type="button" role="tab" aria-selected="false" aria-controls="entry-list">Addresses</button>
       </div>
       <div class="search-bar">
+        <label class="sr-only" for="search-input">Search vault items</label>
         <span class="search-icon" aria-hidden="true">
           <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="11" cy="11" r="6.5" />
             <path d="m16 16 4 4" />
           </svg>
         </span>
-        <input type="text" id="search-input" placeholder="Search passwords...">
+        <input type="text" id="search-input" placeholder="Search passwords..." autocomplete="off">
       </div>
-      <div id="entry-list" class="entry-list"></div>
+      <div id="entry-list" class="entry-list" role="tabpanel" aria-labelledby="section-passwords" aria-live="polite"></div>
       <button id="add-btn" class="fab" title="Add" aria-label="Add" type="button">
         <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d="M12 5v14" />
@@ -193,17 +220,17 @@
       </div>
       <div class="form-body">
         <div class="field">
-          <label>Website URL</label>
-          <input type="text" id="form-url" placeholder="https://example.com">
+          <label for="form-url">Website URL</label>
+          <input type="text" id="form-url" placeholder="https://example.com" autocomplete="url">
         </div>
         <div class="field">
-          <label>Username / Email</label>
-          <input type="text" id="form-username" placeholder="user@example.com">
+          <label for="form-username">Username / Email</label>
+          <input type="text" id="form-username" placeholder="user@example.com" autocomplete="username">
         </div>
         <div class="field">
-          <label>Password</label>
+          <label for="form-password">Password</label>
           <div class="password-row">
-            <input type="password" id="form-password" placeholder="Password">
+            <input type="password" id="form-password" placeholder="Password" autocomplete="new-password" aria-describedby="strength-text">
             <button id="form-toggle-pw" class="icon-btn" title="Show" aria-label="Show password" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
@@ -218,12 +245,13 @@
               </svg>
             </button>
           </div>
-          <div id="strength-bar" class="strength-bar">
+          <div id="strength-bar" class="strength-bar" role="meter" aria-labelledby="strength-text" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0">
             <div id="strength-fill" class="strength-fill"></div>
           </div>
+          <div id="strength-text" class="strength-text" aria-live="polite">Password strength: empty</div>
         </div>
         <div class="field">
-          <label>Notes (optional)</label>
+          <label for="form-notes">Notes (optional)</label>
           <textarea id="form-notes" rows="3" placeholder="Additional notes..."></textarea>
         </div>
         <div class="form-actions">

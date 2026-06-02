@@ -32,6 +32,7 @@ const AUTH_REQUIRED_TYPES = new Set([
   'CHECK_CREDENTIALS',
   'GET_CREDENTIAL_FOR_FILL',
   'FORM_SUBMITTED',
+  'CHECK_PENDING_CREDENTIALS',
   'GET_FAVICON',
   'BULK_IMPORT',
   'CHANGE_PASSWORD',
@@ -568,6 +569,55 @@ function pendingCredentialMatchesSubmission(pending, pageUrl, password) {
   return String(pending.password || '') === String(password || '');
 }
 
+async function compareExistingCredentialPassword(entry, pageUrl, password) {
+  const detail = await api.getEntry(entry.id);
+  if (!isCredentialAllowedForPage(detail, pageUrl)) {
+    return { action: 'missing_username' };
+  }
+
+  if (String(detail.password || '') === String(password || '')) {
+    return {
+      action: 'unchanged',
+      entryId: detail.id,
+      username: detail.username || entry.username || '',
+    };
+  }
+
+  return {
+    action: 'update',
+    entryId: detail.id,
+    username: detail.username || entry.username || '',
+  };
+}
+
+async function getCredentialSaveDecision(existing, pageUrl, username, password) {
+  const normalizedUsername = normalizeUsername(username);
+  const candidates = existing.filter((entry) => isCredentialAllowedForPage(entry, pageUrl));
+
+  if (normalizedUsername) {
+    const match = candidates.find((entry) => normalizeUsername(entry.username) === normalizedUsername);
+    if (!match) {
+      return { action: 'create' };
+    }
+
+    return await compareExistingCredentialPassword(match, pageUrl, password);
+  }
+
+  if (candidates.length === 1) {
+    return await compareExistingCredentialPassword(candidates[0], pageUrl, password);
+  }
+
+  return { action: 'missing_username' };
+}
+
+function buildSavePromptMessage(decision, domain, username) {
+  if (decision.action === 'update') {
+    return `Update saved password for ${username || domain}?`;
+  }
+
+  return `Save password for ${domain}?`;
+}
+
 async function clearPendingCredentials() {
   pendingCredentials = null;
   await chrome.storage.session.remove(STORAGE_KEY_PENDING_CREDENTIALS);
@@ -909,13 +959,30 @@ async function handleMessage(message, sender) {
         return { hasPending: false };
       }
 
+      await session.resetAutoLock();
+      const username = pending.username || await getPendingUsername(domain) || '';
+      const existing = await api.listEntries(domain);
+      const decision = await getCredentialSaveDecision(existing, pageUrl, username, pending.password);
+
+      if (decision.action === 'unchanged' || decision.action === 'missing_username') {
+        await clearPendingUsername(domain);
+        await clearPendingCredentials();
+        return {
+          hasPending: false,
+          reason: decision.action,
+        };
+      }
+
       return {
         hasPending: true,
         credentials: {
           url: pending.url,
           domain: pending.domain,
-          username: pending.username || await getPendingUsername(domain) || '',
+          username,
           password: pending.password,
+          action: decision.action === 'update' ? 'update' : 'save',
+          entryId: decision.entryId || null,
+          message: buildSavePromptMessage(decision, pending.domain || domain, decision.username || username),
         },
       };
     }
@@ -978,6 +1045,13 @@ async function handleMessage(message, sender) {
           };
         }
 
+        const decision = await compareExistingCredentialPassword(match, pageUrl, password);
+        if (decision.action === 'unchanged') {
+          await clearPendingUsername(domain);
+          await clearPendingCredentials();
+          return { saved: true, unchanged: true };
+        }
+
         await api.updateEntry(match.id, { password });
         session.clearCache();
         await clearPendingUsername(domain);
@@ -985,23 +1059,38 @@ async function handleMessage(message, sender) {
         return { saved: true, updated: true };
       }
 
+      const decision = await getCredentialSaveDecision(existing, pageUrl, effectiveUsername, password);
+      if (decision.action === 'unchanged') {
+        await clearPendingUsername(domain);
+        await clearPendingCredentials();
+        return { saved: true, unchanged: true };
+      }
+
       if (effectiveUsername) {
-        // Normal flow: match by domain + username
-        const match = existing.find((e) => normalizeUsername(e.username) === normalizeUsername(effectiveUsername));
-        if (match) {
-          await api.updateEntry(match.id, { password });
+        if (decision.action === 'update' && decision.entryId) {
+          await api.updateEntry(decision.entryId, { password });
           session.clearCache();
           await clearPendingUsername(domain);
           await clearPendingCredentials();
           return { saved: true, updated: true };
-        } else {
-          await api.createEntry({ website_url: url, username: effectiveUsername, password });
-          session.clearCache();
-          await clearPendingUsername(domain);
-          await clearPendingCredentials();
-          return { saved: true, updated: false };
         }
+
+        await api.createEntry({ website_url: url, username: effectiveUsername, password });
+        session.clearCache();
+        await clearPendingUsername(domain);
+        await clearPendingCredentials();
+        return { saved: true, updated: false };
       } else {
+        if (decision.action === 'update' && decision.entryId) {
+          return {
+            saved: false,
+            reason: 'confirm_update',
+            entryId: decision.entryId,
+            username: decision.username,
+            message: buildSavePromptMessage(decision, domain, decision.username),
+          };
+        }
+
         if (existing.length === 1) {
           const entry = existing[0];
           return {
