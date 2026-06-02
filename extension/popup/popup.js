@@ -210,6 +210,7 @@ async function handleSessionLoss(err) {
   const lockBtn = document.getElementById('lock-btn');
   if (lockBtn) lockBtn.classList.add('hidden');
   window.VaultSections?.invalidateEntityCache?.();
+  await EntryDetail.clearResumeState?.();
   hideAllScreens();
   LoginScreen.show();
   showToast(err?.message || 'Verbindung verloren. Bitte erneut anmelden.', 'error');
@@ -220,6 +221,9 @@ async function showUnlockedVault() {
   LoginScreen.hide();
   hideAllScreens();
   document.getElementById('lock-btn').classList.remove('hidden');
+  if (await EntryDetail.tryRestore?.()) {
+    return;
+  }
   await VaultSections.setActiveTab(VaultSections.activeTab || 'passwords');
 }
 
@@ -1502,6 +1506,7 @@ document.getElementById('lock-btn').addEventListener('click', async () => {
     // local lock fallback still happens below
   }
   window.VaultSections?.invalidateEntityCache?.();
+  await EntryDetail.clearResumeState?.();
   document.getElementById('lock-btn').classList.add('hidden');
   hideAllScreens();
   LoginScreen.show();
@@ -1543,6 +1548,7 @@ function hideAllScreens() {
       await showUnlockedVault();
       hideBootScreen();
     } else {
+      await EntryDetail.clearResumeState?.();
       await LoginScreen.show({
         animate: false,
         awaitStatus: true,

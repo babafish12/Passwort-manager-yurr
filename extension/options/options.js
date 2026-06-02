@@ -1,12 +1,13 @@
 const STORAGE_KEY = 'yurrr_server_url';
 const DEFAULT_URL = 'https://localhost:8443';
 const STORAGE_KEY_EMAIL_SUGGESTIONS = 'yurrr_email_suggestions';
-const STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS = 'yurrr_auto_email_suggestions';
-const STORAGE_KEY_AUTO_EMAIL_SELECTED = 'yurrr_auto_email_selected';
 const STORAGE_KEY_ENABLE_FAVICONS = 'yurrr_enable_favicons';
 const DECRYPTED_EXPORT_CONFIRMATION = 'EXPORT DECRYPTED VAULT';
 const MAX_EMAIL_SUGGESTIONS = 100;
 const SESSION_MODES = new Set(['ephemeral', 'persistent', 'inactivity', 'never']);
+const STORAGE_KEY_DETAIL_RESUME_MINUTES = 'yurrr_detail_resume_minutes';
+const DEFAULT_DETAIL_RESUME_MINUTES = 5;
+const MAX_DETAIL_RESUME_MINUTES = 60;
 
 const serverUrlInput = document.getElementById('server-url');
 const testBtn = document.getElementById('test-btn');
@@ -207,30 +208,32 @@ const saveSessionBtn = document.getElementById('save-session-btn');
 const sessionStatusEl = document.getElementById('session-status');
 const autoLockField = document.getElementById('auto-lock-field');
 const autoLockInput = document.getElementById('auto-lock-minutes');
+const detailResumeInput = document.getElementById('detail-resume-minutes');
 const emailSuggestionsInput = document.getElementById('email-suggestions');
 const saveEmailsBtn = document.getElementById('save-emails-btn');
-const autoEmailSelectionListEl = document.getElementById('auto-email-selection-list');
-const selectAllAutoEmailsBtn = document.getElementById('select-all-auto-emails-btn');
-const selectNoneAutoEmailsBtn = document.getElementById('select-none-auto-emails-btn');
-const clearAutoEmailsBtn = document.getElementById('clear-auto-emails-btn');
-const importVaultEmailsBtn = document.getElementById('import-vault-emails-btn');
 const emailStatusEl = document.getElementById('email-status');
-
-let autoDetectedEmails = [];
-let selectedAutoEmails = [];
-let selectedInitialized = false;
 
 function updateAutoLockVisibility(mode) {
   autoLockField.style.display = mode === 'inactivity' ? '' : 'none';
 }
 
-chrome.storage.local.get([STORAGE_KEY_SESSION_MODE, STORAGE_KEY_AUTO_LOCK_MINUTES], (result) => {
-  const storedMode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
-  const mode = SESSION_MODES.has(storedMode) ? storedMode : 'ephemeral';
-  sessionModeSelect.value = mode;
-  autoLockInput.value = result[STORAGE_KEY_AUTO_LOCK_MINUTES] || 15;
-  updateAutoLockVisibility(mode);
-});
+function normalizeDetailResumeMinutes(value) {
+  const minutes = Number.parseInt(value, 10);
+  if (!Number.isFinite(minutes)) return DEFAULT_DETAIL_RESUME_MINUTES;
+  return Math.max(0, Math.min(MAX_DETAIL_RESUME_MINUTES, minutes));
+}
+
+chrome.storage.local.get(
+  [STORAGE_KEY_SESSION_MODE, STORAGE_KEY_AUTO_LOCK_MINUTES, STORAGE_KEY_DETAIL_RESUME_MINUTES],
+  (result) => {
+    const storedMode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
+    const mode = SESSION_MODES.has(storedMode) ? storedMode : 'ephemeral';
+    sessionModeSelect.value = mode;
+    autoLockInput.value = result[STORAGE_KEY_AUTO_LOCK_MINUTES] || 15;
+    detailResumeInput.value = normalizeDetailResumeMinutes(result[STORAGE_KEY_DETAIL_RESUME_MINUTES]);
+    updateAutoLockVisibility(mode);
+  }
+);
 
 sessionModeSelect.addEventListener('change', () => {
   updateAutoLockVisibility(sessionModeSelect.value);
@@ -239,9 +242,14 @@ sessionModeSelect.addEventListener('change', () => {
 saveSessionBtn.addEventListener('click', () => {
   const mode = sessionModeSelect.value;
   const minutes = Math.max(1, Math.min(1440, parseInt(autoLockInput.value, 10) || 15));
+  const detailResumeMinutes = normalizeDetailResumeMinutes(detailResumeInput.value);
   autoLockInput.value = minutes;
+  detailResumeInput.value = detailResumeMinutes;
 
-  const data = { [STORAGE_KEY_SESSION_MODE]: mode };
+  const data = {
+    [STORAGE_KEY_SESSION_MODE]: mode,
+    [STORAGE_KEY_DETAIL_RESUME_MINUTES]: detailResumeMinutes,
+  };
   if (mode === 'inactivity') {
     data[STORAGE_KEY_AUTO_LOCK_MINUTES] = minutes;
   }
@@ -256,9 +264,13 @@ saveSessionBtn.addEventListener('click', () => {
     } else if (mode === 'never') {
       message = 'Saved! Session only locks on manual lock, password change, or server restart.';
     }
-    sessionStatusEl.textContent = message;
+    const resumeMessage = detailResumeMinutes === 0
+      ? ' Entry restore is disabled.'
+      : ` Entry restore window is ${detailResumeMinutes} minute${detailResumeMinutes === 1 ? '' : 's'}.`;
+    const fullMessage = `${message}${resumeMessage}`;
+    sessionStatusEl.textContent = fullMessage;
     sessionStatusEl.className = 'status success';
-    showToast(message, 'success');
+    showToast(fullMessage, 'success');
     setButtonLoading(saveSessionBtn, false);
     hideStatusLater(sessionStatusEl, 3000);
   });
@@ -282,22 +294,6 @@ function normalizeEmailSuggestions(rawValue) {
   }
 
   return unique.slice(0, MAX_EMAIL_SUGGESTIONS);
-}
-
-function mergeUniqueEmails(...lists) {
-  const merged = [];
-  const seen = new Set();
-  for (const list of lists) {
-    for (const raw of list) {
-      const email = String(raw || '').trim().toLowerCase();
-      if (!email) continue;
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) continue;
-      if (seen.has(email)) continue;
-      seen.add(email);
-      merged.push(email);
-    }
-  }
-  return merged;
 }
 
 async function sendBackgroundMessage(type, payload = {}) {
@@ -414,89 +410,10 @@ function parseStoredEmailSuggestions(value) {
   return normalizeEmailSuggestions(value || '');
 }
 
-function sanitizeSelectedAutoEmails(selectedEmails, detectedEmails) {
-  const allowed = new Set(mergeUniqueEmails(detectedEmails));
-  const selected = mergeUniqueEmails(selectedEmails);
-  return selected.filter((email) => allowed.has(email));
-}
-
-function renderAutoEmailSelectionList() {
-  if (!autoDetectedEmails.length) {
-    autoEmailSelectionListEl.innerHTML = '<div class="auto-email-empty">No auto-detected emails yet.</div>';
-    return;
-  }
-
-  const selectedSet = new Set(selectedAutoEmails);
-  autoEmailSelectionListEl.innerHTML = autoDetectedEmails
-    .map((email, idx) => {
-      const id = `auto-email-item-${idx}`;
-      const checked = selectedSet.has(email) ? 'checked' : '';
-      return `
-        <label class="auto-email-item" for="${id}">
-          <span class="auto-email-label">${escapeHtml(email)}</span>
-          <input id="${id}" type="checkbox" data-email="${escapeHtml(email)}" ${checked}>
-        </label>
-      `;
-    })
-    .join('');
-}
-
-function persistSelectedAutoEmails() {
-  chrome.storage.local.set({ [STORAGE_KEY_AUTO_EMAIL_SELECTED]: selectedAutoEmails });
-}
-
-function setSelectedAutoEmails(nextSelected, persist = true) {
-  selectedAutoEmails = sanitizeSelectedAutoEmails(nextSelected, autoDetectedEmails);
-  selectedInitialized = true;
-  renderAutoEmailSelectionList();
-  if (persist) {
-    persistSelectedAutoEmails();
-  }
-}
-
-function applyAutoDetectedEmails(nextDetectedEmails, persistSelection = true) {
-  const previousDetected = autoDetectedEmails;
-  autoDetectedEmails = mergeUniqueEmails(nextDetectedEmails);
-
-  if (!selectedInitialized) {
-    selectedAutoEmails = [...autoDetectedEmails];
-    selectedInitialized = true;
-  } else {
-    const selectedSet = new Set(sanitizeSelectedAutoEmails(selectedAutoEmails, autoDetectedEmails));
-    const previousSet = new Set(previousDetected);
-    for (const email of autoDetectedEmails) {
-      if (!previousSet.has(email)) {
-        selectedSet.add(email);
-      }
-    }
-    selectedAutoEmails = Array.from(selectedSet);
-  }
-
-  renderAutoEmailSelectionList();
-  if (persistSelection) {
-    persistSelectedAutoEmails();
-  }
-}
-
-chrome.storage.local.get(
-  [STORAGE_KEY_EMAIL_SUGGESTIONS, STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS, STORAGE_KEY_AUTO_EMAIL_SELECTED],
-  (result) => {
-    const suggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_EMAIL_SUGGESTIONS]);
-    const autoSuggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]);
-    const hasSelected = Array.isArray(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
-    const selected = parseStoredEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
-
-    emailSuggestionsInput.value = suggestions.join('\n');
-    autoDetectedEmails = autoSuggestions;
-    if (hasSelected) {
-      selectedAutoEmails = sanitizeSelectedAutoEmails(selected, autoDetectedEmails);
-      selectedInitialized = true;
-      renderAutoEmailSelectionList();
-    } else {
-      applyAutoDetectedEmails(autoDetectedEmails, true);
-    }
-  }
-);
+chrome.storage.local.get(STORAGE_KEY_EMAIL_SUGGESTIONS, (result) => {
+  const suggestions = parseStoredEmailSuggestions(result[STORAGE_KEY_EMAIL_SUGGESTIONS]);
+  emailSuggestionsInput.value = suggestions.join('\n');
+});
 
 saveEmailsBtn.addEventListener('click', () => {
   const emails = normalizeEmailSuggestions(emailSuggestionsInput.value);
@@ -507,90 +424,6 @@ saveEmailsBtn.addEventListener('click', () => {
     setButtonLoading(saveEmailsBtn, false);
     hideStatusLater(emailStatusEl, 3000);
   });
-});
-
-clearAutoEmailsBtn.addEventListener('click', () => {
-  setButtonLoading(clearAutoEmailsBtn, true, 'Clearing...');
-  chrome.storage.local.set(
-    {
-      [STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]: [],
-      [STORAGE_KEY_AUTO_EMAIL_SELECTED]: [],
-    },
-    () => {
-      autoDetectedEmails = [];
-      selectedAutoEmails = [];
-      selectedInitialized = true;
-      renderAutoEmailSelectionList();
-      showEmailStatus('Auto-detected emails cleared.', 'success');
-      setButtonLoading(clearAutoEmailsBtn, false);
-      hideStatusLater(emailStatusEl, 3000);
-    }
-  );
-});
-
-importVaultEmailsBtn.addEventListener('click', async () => {
-  setButtonLoading(importVaultEmailsBtn, true, 'Importing...');
-
-  try {
-    const result = await sendBackgroundMessage('GET_KNOWN_EMAIL_USERNAMES');
-    const vaultEmails = Array.isArray(result?.emails) ? result.emails : [];
-    const existing = await chrome.storage.local.get(STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS);
-    const currentAuto = Array.isArray(existing[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS])
-      ? existing[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]
-      : [];
-
-    const merged = mergeUniqueEmails(currentAuto, vaultEmails).slice(0, MAX_EMAIL_SUGGESTIONS);
-    await chrome.storage.local.set({ [STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]: merged });
-    showEmailStatus(`Imported ${vaultEmails.length} emails from vault.`, 'success');
-  } catch (err) {
-    showEmailStatus(`Import failed: ${err.message}`, 'error');
-  } finally {
-    setButtonLoading(importVaultEmailsBtn, false);
-    hideStatusLater(emailStatusEl, 3000);
-  }
-});
-
-selectAllAutoEmailsBtn.addEventListener('click', () => {
-  setSelectedAutoEmails(autoDetectedEmails, true);
-  showToast('All auto-detected emails selected.', 'success');
-});
-
-selectNoneAutoEmailsBtn.addEventListener('click', () => {
-  setSelectedAutoEmails([], true);
-  showToast('Selection cleared.', 'success');
-});
-
-autoEmailSelectionListEl.addEventListener('change', (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLInputElement)) return;
-  if (target.type !== 'checkbox') return;
-
-  const email = String(target.dataset.email || '').trim().toLowerCase();
-  if (!email) return;
-
-  const next = new Set(selectedAutoEmails);
-  if (target.checked) {
-    next.add(email);
-  } else {
-    next.delete(email);
-  }
-  setSelectedAutoEmails(Array.from(next), true);
-});
-
-chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName !== 'local') return;
-  if (changes[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]) {
-    const next = Array.isArray(changes[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS].newValue)
-      ? changes[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS].newValue
-      : [];
-    applyAutoDetectedEmails(next, true);
-  }
-  if (changes[STORAGE_KEY_AUTO_EMAIL_SELECTED]) {
-    const nextSelected = Array.isArray(changes[STORAGE_KEY_AUTO_EMAIL_SELECTED].newValue)
-      ? changes[STORAGE_KEY_AUTO_EMAIL_SELECTED].newValue
-      : [];
-    setSelectedAutoEmails(nextSelected, false);
-  }
 });
 
 // --- Import ---

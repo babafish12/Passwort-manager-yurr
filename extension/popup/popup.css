@@ -829,6 +829,10 @@ textarea::placeholder {
   min-width: 0;
 }
 
+.detail-copy-actions {
+  margin: 2px 0 12px;
+}
+
 .password-masked {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   letter-spacing: 0;

@@ -157,6 +157,12 @@
         <small>Lock the vault after this many minutes of inactivity (1–1440).</small>
       </div>
 
+      <div class="field">
+        <label for="detail-resume-minutes">Open Entry Restore Timeout (minutes)</label>
+        <input type="number" id="detail-resume-minutes" min="0" max="60" step="1" value="5">
+        <small>Reopen the last password detail view within this many minutes. Use 0 to disable it.</small>
+      </div>
+
       <div class="actions">
         <button id="save-session-btn" class="btn btn-primary" type="button">
           <span class="btn-content">
@@ -195,55 +201,6 @@
               <path d="m5 12 4 4 10-10" />
             </svg>
             <span class="btn-label">Save</span>
-          </span>
-        </button>
-      </div>
-
-      <div class="field">
-        <label>Auto-Detected Email Addresses</label>
-        <div class="auto-email-controls">
-          <button id="select-all-auto-emails-btn" class="btn btn-secondary" type="button">
-            <span class="btn-content">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="m5 12 4 4 10-10" />
-              </svg>
-              <span class="btn-label">Select All</span>
-            </span>
-          </button>
-          <button id="select-none-auto-emails-btn" class="btn btn-secondary" type="button">
-            <span class="btn-content">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="m6 6 12 12" />
-                <path d="m18 6-12 12" />
-              </svg>
-              <span class="btn-label">Select None</span>
-            </span>
-          </button>
-        </div>
-        <div id="auto-email-selection-list" class="auto-email-selection-list"></div>
-        <small>Select which detected emails should be suggested in signup/login forms.</small>
-      </div>
-
-      <div class="actions">
-        <button id="import-vault-emails-btn" class="btn btn-secondary" type="button">
-          <span class="btn-content">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M10 14 20 4" />
-              <path d="M14 4h6v6" />
-              <path d="M20 14v4a2 2 0 0 1-2 2h-4" />
-              <path d="M10 20H6a2 2 0 0 1-2-2v-4" />
-              <path d="M4 10V6a2 2 0 0 1 2-2h4" />
-            </svg>
-            <span class="btn-label">Import From Vault</span>
-          </span>
-        </button>
-        <button id="clear-auto-emails-btn" class="btn btn-secondary" type="button">
-          <span class="btn-content">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="m6 6 12 12" />
-              <path d="m18 6-12 12" />
-            </svg>
-            <span class="btn-label">Clear Auto-Detected</span>
           </span>
         </button>
       </div>

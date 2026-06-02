@@ -1,7 +1,14 @@
 // Entry detail logic
+const DETAIL_RESUME_STATE_KEY = 'yurrr_detail_resume_state';
+const STORAGE_KEY_DETAIL_RESUME_MINUTES = 'yurrr_detail_resume_minutes';
+const DEFAULT_DETAIL_RESUME_MINUTES = 5;
+const MAX_DETAIL_RESUME_MINUTES = 60;
+const DETAIL_RESUME_REFRESH_MS = 5000;
+
 const EntryDetail = {
   currentEntry: null,
   passwordVisible: false,
+  resumeTimer: null,
 
   init() {
     this.screen = document.getElementById('detail-screen');
@@ -13,6 +20,7 @@ const EntryDetail = {
     this.notesEl = document.getElementById('detail-notes');
     this.notesField = document.getElementById('detail-notes-field');
     this.togglePwBtn = document.getElementById('toggle-password');
+    this.copyAllBtn = document.getElementById('copy-entry-all-btn');
 
     document.getElementById('back-from-detail').addEventListener('click', () => {
       this.hide();
@@ -28,6 +36,7 @@ const EntryDetail = {
     });
 
     document.getElementById('delete-entry-btn').addEventListener('click', () => this.handleDelete());
+    this.copyAllBtn.addEventListener('click', () => this.copyAllDetails());
 
     // Copy buttons
     this.screen.querySelectorAll('.copy-btn[data-copy]').forEach((btn) => {
@@ -48,10 +57,17 @@ const EntryDetail = {
         navigator.clipboard.writeText(text).then(() => showToast('Copied!'));
       });
     });
+
+    window.addEventListener('pagehide', () => {
+      if (this.currentEntry && !this.screen.classList.contains('hidden')) {
+        this.persistResumeState().catch(() => {});
+      }
+    });
   },
 
   async show(entryId) {
     this.passwordVisible = false;
+    this.stopResumeTimer();
 
     try {
       const entry = await sendMessage('GET_ENTRY', { id: entryId });
@@ -77,13 +93,16 @@ const EntryDetail = {
       EntryList.hide();
       this.screen.classList.remove('hidden');
       window.animatePopupScreen?.(this.screen, 'forward');
+      this.startResumeTimer();
+      return true;
     } catch (err) {
-      if (isSessionLostError(err)) return;
+      if (isSessionLostError(err)) return false;
       showToast('Error: ' + err.message, 'error');
+      return false;
     }
   },
 
-  hide() {
+  hide({ clearResume = true } = {}) {
     this.screen.classList.add('hidden');
     this.passwordVisible = false;
     this.passwordEl.textContent = '\u2022'.repeat(12);
@@ -92,6 +111,11 @@ const EntryDetail = {
     this.togglePwBtn.title = 'Show password';
     this.togglePwBtn.setAttribute('aria-label', 'Show password');
     this.currentEntry = null;
+    if (clearResume) {
+      this.clearResumeState();
+    } else {
+      this.stopResumeTimer();
+    }
   },
 
   togglePassword() {
@@ -108,6 +132,116 @@ const EntryDetail = {
       this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
       this.togglePwBtn.title = 'Show password';
       this.togglePwBtn.setAttribute('aria-label', 'Show password');
+    }
+  },
+
+  async copyAllDetails() {
+    if (!this.currentEntry) return;
+
+    const text = [
+      `Website: ${this.currentEntry.website_url || ''}`,
+      `Username / Email: ${this.currentEntry.username || ''}`,
+      `Password: ${this.currentEntry.password || ''}`,
+    ].join('\n');
+
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('Copied all login data!');
+    } catch (err) {
+      showToast(`Copy failed: ${err.message}`, 'error');
+    }
+  },
+
+  getResumeStore() {
+    return chrome.storage.session || chrome.storage.local;
+  },
+
+  normalizeResumeMinutes(value) {
+    const minutes = Number.parseFloat(value);
+    if (!Number.isFinite(minutes)) return DEFAULT_DETAIL_RESUME_MINUTES;
+    return Math.max(0, Math.min(MAX_DETAIL_RESUME_MINUTES, minutes));
+  },
+
+  async getResumeTimeoutMs() {
+    try {
+      const result = await chrome.storage.local.get(STORAGE_KEY_DETAIL_RESUME_MINUTES);
+      return this.normalizeResumeMinutes(result[STORAGE_KEY_DETAIL_RESUME_MINUTES]) * 60 * 1000;
+    } catch {
+      return DEFAULT_DETAIL_RESUME_MINUTES * 60 * 1000;
+    }
+  },
+
+  async persistResumeState() {
+    if (!this.currentEntry?.id || this.screen.classList.contains('hidden')) return;
+
+    const timeoutMs = await this.getResumeTimeoutMs();
+    const store = this.getResumeStore();
+    if (timeoutMs <= 0) {
+      await store.remove(DETAIL_RESUME_STATE_KEY);
+      return;
+    }
+
+    await store.set({
+      [DETAIL_RESUME_STATE_KEY]: {
+        entryId: String(this.currentEntry.id),
+        expiresAt: Date.now() + timeoutMs,
+      },
+    });
+  },
+
+  startResumeTimer() {
+    this.stopResumeTimer();
+    this.persistResumeState().catch(() => {});
+    this.resumeTimer = setInterval(() => {
+      this.persistResumeState().catch(() => {});
+    }, DETAIL_RESUME_REFRESH_MS);
+  },
+
+  stopResumeTimer() {
+    if (!this.resumeTimer) return;
+    clearInterval(this.resumeTimer);
+    this.resumeTimer = null;
+  },
+
+  async clearResumeState() {
+    this.stopResumeTimer();
+    try {
+      await this.getResumeStore().remove(DETAIL_RESUME_STATE_KEY);
+    } catch {
+      // Restore state is best-effort only.
+    }
+  },
+
+  async tryRestore() {
+    try {
+      const store = this.getResumeStore();
+      const result = await store.get(DETAIL_RESUME_STATE_KEY);
+      const state = result[DETAIL_RESUME_STATE_KEY];
+      const entryId = state?.entryId;
+      const expiresAt = Number(state?.expiresAt);
+
+      if (!entryId || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+        await this.clearResumeState();
+        return false;
+      }
+
+      if (window.VaultSections) {
+        window.VaultSections.activeTab = 'passwords';
+        window.VaultSections.updateChipState?.();
+      }
+
+      const restored = await this.show(entryId);
+      if (restored) return true;
+
+      if (!document.getElementById('login-screen')?.classList.contains('hidden')) {
+        return true;
+      }
+
+      await this.clearResumeState();
+      return false;
+    } catch {
+      await this.clearResumeState();
+      return false;
     }
   },
 

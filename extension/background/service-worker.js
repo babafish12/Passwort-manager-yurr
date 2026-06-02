@@ -1,8 +1,6 @@
 import { VaultAPI } from './api.js';
 import { SessionManager } from './session.js';
 import {
-  STORAGE_KEY_AUTO_EMAIL_SELECTED,
-  STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS,
   STORAGE_KEY_EMAIL_SUGGESTIONS,
   STORAGE_KEY_PENDING_CREDENTIALS,
   STORAGE_KEY_PENDING_USERNAMES,
@@ -15,7 +13,6 @@ const faviconCache = new Map();
 let pendingCredentials = null;
 const PENDING_CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
-const MAX_AUTO_EMAIL_SUGGESTIONS = 100;
 const MAX_VISIBLE_EMAIL_SUGGESTIONS = 8;
 const AUTH_REQUIRED_TYPES = new Set([
   'LIST_ENTRIES',
@@ -36,13 +33,11 @@ const AUTH_REQUIRED_TYPES = new Set([
   'GET_FAVICON',
   'BULK_IMPORT',
   'CHANGE_PASSWORD',
-  'GET_KNOWN_EMAIL_USERNAMES',
 ]);
 const CONTENT_SAFE_MESSAGE_TYPES = new Set([
   'CHECK_CREDENTIALS',
   'GET_CREDENTIAL_FOR_FILL',
   'GET_EMAIL_SUGGESTIONS',
-  'STORE_DISCOVERED_EMAIL',
   'PENDING_USERNAME',
   'GET_PENDING_USERNAME',
   'CLEAR_PENDING_USERNAME',
@@ -222,44 +217,12 @@ async function getEmailSuggestionsForPage(pageUrl) {
     return [];
   }
 
-  const result = await chrome.storage.local.get([
-    STORAGE_KEY_EMAIL_SUGGESTIONS,
-    STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS,
-    STORAGE_KEY_AUTO_EMAIL_SELECTED,
-  ]);
+  const result = await chrome.storage.local.get(STORAGE_KEY_EMAIL_SUGGESTIONS);
   const manualSuggestions = parseEmailSuggestions(result[STORAGE_KEY_EMAIL_SUGGESTIONS]);
-  const allAutoSuggestions = parseEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]);
-  const hasSelectedAutoEmails = Array.isArray(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
-  const selectedAutoEmails = parseEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SELECTED]);
-  const selectedSet = new Set(selectedAutoEmails.map(normalizeEmail));
-  const autoSuggestions = hasSelectedAutoEmails
-    ? allAutoSuggestions.filter((email) => selectedSet.has(normalizeEmail(email)))
-    : allAutoSuggestions;
   const vaultSuggestions = await getKnownEmailUsernamesFromVault();
 
-  return mergeEmailLists(manualSuggestions, autoSuggestions, vaultSuggestions)
+  return mergeEmailLists(manualSuggestions, vaultSuggestions)
     .slice(0, MAX_VISIBLE_EMAIL_SUGGESTIONS);
-}
-
-async function storeDiscoveredEmailForPage(pageUrl, value) {
-  if (!isCredentialPageAllowed(pageUrl)) {
-    return false;
-  }
-
-  const email = normalizeEmail(value);
-  if (!email || !isValidEmail(email)) {
-    return false;
-  }
-
-  const result = await chrome.storage.local.get(STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS);
-  const current = parseEmailSuggestions(result[STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]);
-  if (current.includes(email)) {
-    return true;
-  }
-
-  const updated = [email, ...current].slice(0, MAX_AUTO_EMAIL_SUGGESTIONS);
-  await chrome.storage.local.set({ [STORAGE_KEY_AUTO_EMAIL_SUGGESTIONS]: updated });
-  return true;
 }
 
 function normalizeDomain(value) {
@@ -857,26 +820,10 @@ async function handleMessage(message, sender) {
       };
     }
 
-    case 'GET_KNOWN_EMAIL_USERNAMES': {
-      if (!(await session.isUnlocked())) {
-        return { emails: [] };
-      }
-      await session.resetAutoLock();
-      const emails = await getKnownEmailUsernamesFromVault();
-      return { emails: emails.slice(0, 250) };
-    }
-
     case 'GET_EMAIL_SUGGESTIONS': {
       const pageUrl = getMessagePageUrl(payload, sender);
       const emails = await getEmailSuggestionsForPage(pageUrl);
       return { emails };
-    }
-
-    case 'STORE_DISCOVERED_EMAIL': {
-      const pageUrl = getMessagePageUrl(payload, sender);
-      return {
-        stored: await storeDiscoveredEmailForPage(pageUrl, payload.email),
-      };
     }
 
     case 'PENDING_USERNAME': {

@@ -257,100 +257,6 @@ small {
   display: none !important;
 }
 
-.auto-email-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.auto-email-selection-list {
-  max-height: 220px;
-  overflow-y: auto;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  background: rgba(8, 14, 28, 0.7);
-  padding: 7px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(151, 174, 214, 0.45) transparent;
-}
-
-.auto-email-selection-list::-webkit-scrollbar {
-  width: 8px;
-}
-
-.auto-email-selection-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.auto-email-selection-list::-webkit-scrollbar-thumb {
-  background: rgba(151, 174, 214, 0.42);
-  border-radius: 999px;
-}
-
-.auto-email-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 9px;
-  border-radius: var(--radius-sm);
-  color: var(--text-main);
-  font-size: 13px;
-}
-
-.auto-email-item:hover {
-  background: rgba(57, 216, 130, 0.12);
-}
-
-.auto-email-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auto-email-item input[type='checkbox'] {
-  appearance: none;
-  width: 36px;
-  height: 20px;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
-  background: #1b2b4b;
-  position: relative;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast);
-}
-
-.auto-email-item input[type='checkbox']::before {
-  content: '';
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #d5ddf1;
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  transition: transform var(--transition-fast), background-color var(--transition-fast);
-}
-
-.auto-email-item input[type='checkbox']:checked {
-  background: rgba(57, 216, 130, 0.35);
-  border-color: rgba(57, 216, 130, 0.56);
-}
-
-.auto-email-item input[type='checkbox']:checked::before {
-  transform: translateX(16px);
-  background: var(--accent);
-}
-
-.auto-email-empty {
-  color: var(--text-muted);
-  font-size: 13px;
-  padding: 10px;
-}
-
 .checkbox-row {
   display: inline-flex;
   align-items: center;
@@ -502,7 +408,6 @@ input:focus-visible,
 textarea:focus-visible,
 select:focus-visible,
 button:focus-visible,
-.auto-email-item input[type='checkbox']:focus-visible,
 .checkbox-row input[type='checkbox']:focus-visible + .checkbox-indicator {
   outline: none;
   border-color: rgba(57, 216, 130, 0.56);

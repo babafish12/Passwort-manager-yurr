@@ -9,17 +9,11 @@ const YurrrDetector = {
   scanQueued: false,
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
-  autoEmailPersistQueue: Promise.resolve(),
-  observedEmailFields: new WeakSet(),
   observedSubmitForms: new WeakSet(),
   savePromptTimer: null,
   saveBannerCleanup: null,
   pendingPromptReadyCleanup: null,
-  EMAIL_SUGGESTIONS_KEY: 'yurrr_email_suggestions',
-  AUTO_EMAIL_SUGGESTIONS_KEY: 'yurrr_auto_email_suggestions',
-  AUTO_EMAIL_SELECTED_KEY: 'yurrr_auto_email_selected',
   EMAIL_SUGGESTIONS_LIST_ID: 'yurrr-email-suggestions-list',
-  MAX_AUTO_EMAIL_SUGGESTIONS: 100,
   MAX_VISIBLE_EMAIL_SUGGESTIONS: 8,
   GENERATED_PASSWORD_PROMPT_DELAY_MS: 700,
   GENERATED_PASSWORD_MAX_AGE_MS: 10 * 60 * 1000,
@@ -108,22 +102,6 @@ const YurrrDetector = {
     } catch {
       return [];
     }
-  },
-
-  mergeEmailLists(...lists) {
-    const unique = [];
-    const seen = new Set();
-
-    for (const list of lists) {
-      for (const email of list) {
-        const normalized = this.normalizeEmail(email);
-        if (!normalized || seen.has(normalized)) continue;
-        seen.add(normalized);
-        unique.push(email);
-      }
-    }
-
-    return unique;
   },
 
   normalizeEmail(value) {
@@ -398,42 +376,6 @@ const YurrrDetector = {
     nativeSetter.call(field, email);
     field.dispatchEvent(new Event('input', { bubbles: true }));
     field.dispatchEvent(new Event('change', { bubbles: true }));
-    this.storeDiscoveredEmail(email);
-  },
-
-  observeEmailField(field) {
-    if (!field || this.observedEmailFields.has(field)) return;
-    if (!YurrrHeuristics.isLikelyEmailField(field)) return;
-
-    this.observedEmailFields.add(field);
-
-    const collect = () => {
-      const value = field.value || '';
-      this.storeDiscoveredEmail(value);
-    };
-
-    field.addEventListener('change', collect);
-    field.addEventListener('blur', collect);
-  },
-
-  async storeDiscoveredEmail(value) {
-    if (!this.isCredentialPageAllowed()) return;
-
-    const email = this.normalizeEmail(value);
-    if (!email || !this.isValidEmail(email)) return;
-
-    this.autoEmailPersistQueue = this.autoEmailPersistQueue.then(async () => {
-      await this.sendRuntimeMessage('STORE_DISCOVERED_EMAIL', {
-        email,
-        pageUrl: window.location.href,
-      });
-      this.emailSuggestionsCache = null;
-      this.emailSuggestionsCacheAt = 0;
-    }).catch(() => {
-      // Ignore storage races
-    });
-
-    await this.autoEmailPersistQueue;
   },
 
   normalizeUsername(value) {
@@ -563,7 +505,6 @@ const YurrrDetector = {
         if (emailField) {
           this.detectedForms.add(emailField);
           void this.applyEmailSuggestions(emailField);
-          this.observeEmailField(emailField);
         }
       } else {
         this.tryAutoFill(initialUsernameField, pwField);
@@ -591,7 +532,6 @@ const YurrrDetector = {
       this.detectedForms.add(unField);
 
       void this.applyEmailSuggestions(unField);
-      this.observeEmailField(unField);
       this.tryAutoFill(unField, null);
 
       const form = unField.closest('form');
@@ -612,7 +552,6 @@ const YurrrDetector = {
       unField.addEventListener('change', () => {
         const username = unField.value || '';
         this.rememberUsername(window.location.hostname, window.location.href, username);
-        this.storeDiscoveredEmail(username);
       });
     }
   },
