@@ -4,3 +4,6 @@ vault.db-wal
 vault.db-shm
 certs/
 *.pem
+.codex
+.codex-*/
+.omc/
