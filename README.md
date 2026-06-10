@@ -427,8 +427,15 @@ action so keyboard and screen-reader users do not have nested controls.
 
 1. Visit a login page.
 2. Yurrr checks saved entries for the current domain.
-3. If one matching credential exists, it can fill the form.
-4. If multiple credentials exist, choose the account from the picker.
+3. Focus the username or password field and choose the account from the picker.
+4. To fill matching logins automatically, enable `Autofill saved logins
+   automatically` in the options page.
+
+Automatic autofill is opt-in. When enabled, Yurrr fills only matching login
+forms on the active top-level page. If a page has multiple saved accounts, Yurrr
+uses a typed or remembered username, the last account you picked manually, or a
+single unambiguous match; otherwise it keeps the picker available instead of
+guessing.
 
 ### Save a login after submitting a form
 
@@ -561,6 +568,7 @@ The options page manages:
 - Server URL.
 - Favicon display in the popup.
 - Session persistence and inactivity timeout.
+- Opt-in automatic autofill for saved logins.
 - Manual and auto-detected email suggestions.
 - CSV import.
 - Vault export.

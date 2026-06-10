@@ -1,7 +1,9 @@
 import { VaultAPI } from './api.js';
 import { SessionManager } from './session.js';
 import {
+  STORAGE_KEY_AUTOFILL_ENABLED,
   STORAGE_KEY_EMAIL_SUGGESTIONS,
+  STORAGE_KEY_LAST_SELECTED_CREDENTIALS,
   STORAGE_KEY_PENDING_CREDENTIALS,
   STORAGE_KEY_PENDING_USERNAMES,
   STORAGE_KEY_SERVER_URL,
@@ -13,7 +15,14 @@ const faviconCache = new Map();
 let pendingCredentials = null;
 const PENDING_CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
+const LAST_SELECTED_CREDENTIALS_MAX_RECORDS = 100;
 const MAX_VISIBLE_EMAIL_SUGGESTIONS = 8;
+const CONTENT_SCRIPT_FILES = [
+  'content/heuristics.js',
+  'content/overlay.js',
+  'content/detector.js',
+];
+const CONTENT_STYLE_FILES = ['content/overlay.css'];
 const AUTH_REQUIRED_TYPES = new Set([
   'LIST_ENTRIES',
   'GET_ENTRY',
@@ -28,6 +37,8 @@ const AUTH_REQUIRED_TYPES = new Set([
   'GENERATE_PASSWORD',
   'CHECK_CREDENTIALS',
   'GET_CREDENTIAL_FOR_FILL',
+  'GET_CREDENTIAL_FOR_AUTOFILL',
+  'REMEMBER_SELECTED_CREDENTIAL',
   'FORM_SUBMITTED',
   'CHECK_PENDING_CREDENTIALS',
   'GET_FAVICON',
@@ -37,10 +48,12 @@ const AUTH_REQUIRED_TYPES = new Set([
 const CONTENT_SAFE_MESSAGE_TYPES = new Set([
   'CHECK_CREDENTIALS',
   'GET_CREDENTIAL_FOR_FILL',
+  'GET_CREDENTIAL_FOR_AUTOFILL',
   'GET_EMAIL_SUGGESTIONS',
   'PENDING_USERNAME',
   'GET_PENDING_USERNAME',
   'CLEAR_PENDING_USERNAME',
+  'REMEMBER_SELECTED_CREDENTIAL',
   'PENDING_CREDENTIALS',
   'CHECK_PENDING_CREDENTIALS',
   'CLEAR_PENDING_CREDENTIALS',
@@ -223,6 +236,236 @@ async function getEmailSuggestionsForPage(pageUrl) {
 
   return mergeEmailLists(manualSuggestions, vaultSuggestions)
     .slice(0, MAX_VISIBLE_EMAIL_SUGGESTIONS);
+}
+
+async function isAutofillEnabled() {
+  const result = await chrome.storage.local.get(STORAGE_KEY_AUTOFILL_ENABLED);
+  return result[STORAGE_KEY_AUTOFILL_ENABLED] === true;
+}
+
+async function readLastSelectedCredentials() {
+  const result = await chrome.storage.local.get(STORAGE_KEY_LAST_SELECTED_CREDENTIALS);
+  const raw = result[STORAGE_KEY_LAST_SELECTED_CREDENTIALS];
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {};
+}
+
+async function writeLastSelectedCredentials(records) {
+  const entries = Object.entries(records)
+    .filter(([domain, record]) => (
+      normalizeDomain(domain) &&
+      record &&
+      typeof record === 'object' &&
+      String(record.id || '').trim()
+    ))
+    .sort(([, a], [, b]) => (Number(b.selectedAt) || 0) - (Number(a.selectedAt) || 0))
+    .slice(0, LAST_SELECTED_CREDENTIALS_MAX_RECORDS);
+
+  await chrome.storage.local.set({
+    [STORAGE_KEY_LAST_SELECTED_CREDENTIALS]: Object.fromEntries(entries),
+  });
+}
+
+async function getLastSelectedCredential(domain) {
+  const cleanDomain = stripCommonWwwPrefix(domain);
+  if (!cleanDomain) return null;
+
+  const records = await readLastSelectedCredentials();
+  const record = records[cleanDomain];
+  if (!record || typeof record !== 'object' || !String(record.id || '').trim()) {
+    return null;
+  }
+
+  return {
+    id: String(record.id),
+    username: String(record.username || ''),
+    selectedAt: Number(record.selectedAt) || 0,
+  };
+}
+
+async function rememberSelectedCredentialForPage(payload, sender) {
+  if (!(await session.isUnlocked())) {
+    return false;
+  }
+
+  const pageUrl = getMessagePageUrl(payload, sender);
+  if (!isCredentialPageAllowed(pageUrl)) {
+    return false;
+  }
+
+  const domain = getDomainFromUrl(pageUrl);
+  const selectionDomain = stripCommonWwwPrefix(domain);
+  const selectedId = String(payload?.id || '').trim();
+  if (!domain || !selectionDomain || !selectedId) {
+    return false;
+  }
+
+  const entries = await session.getCredentialsForDomain(domain);
+  const entry = entries.find((item) => String(item.id) === selectedId);
+  if (!entry || !isCredentialAllowedForPage(entry, pageUrl)) {
+    return false;
+  }
+
+  const records = await readLastSelectedCredentials();
+  records[selectionDomain] = {
+    id: String(entry.id),
+    username: String(entry.username || ''),
+    website_url: String(entry.website_url || ''),
+    selectedAt: Date.now(),
+  };
+  await writeLastSelectedCredentials(records);
+  return true;
+}
+
+function rankCredentialForFill(credential, preferredUsername, lastSelectedCredential) {
+  if (preferredUsername && normalizeUsername(credential.username) === preferredUsername) {
+    return 0;
+  }
+
+  if (!preferredUsername && lastSelectedCredential?.id && String(credential.id) === lastSelectedCredential.id) {
+    return 0;
+  }
+
+  return 1;
+}
+
+function sortCredentialsForFill(credentials, preferredUsername, lastSelectedCredential) {
+  return credentials
+    .map((credential, index) => ({ credential, index }))
+    .sort((a, b) => {
+      const aRank = rankCredentialForFill(a.credential, preferredUsername, lastSelectedCredential);
+      const bRank = rankCredentialForFill(b.credential, preferredUsername, lastSelectedCredential);
+      return (aRank - bRank) || (a.index - b.index);
+    })
+    .map((item) => item.credential);
+}
+
+async function getCredentialForPageById(id, pageUrl) {
+  const domain = getDomainFromUrl(pageUrl);
+  if (!domain || !id) {
+    return null;
+  }
+
+  const entries = await session.getCredentialsForDomain(domain);
+  const entry = entries.find((item) => String(item.id) === String(id));
+  if (!entry || !isCredentialAllowedForPage(entry, pageUrl)) {
+    return null;
+  }
+
+  const detail = await api.getEntry(entry.id);
+  if (!isCredentialAllowedForPage(detail, pageUrl)) {
+    return null;
+  }
+
+  return {
+    id: detail.id,
+    username: detail.username,
+    password: detail.password,
+    website_url: detail.website_url,
+  };
+}
+
+async function sendTabMessage(tabId, message) {
+  return await new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, message, { frameId: 0 }, (response) => {
+      if (chrome.runtime.lastError) {
+        resolve(null);
+        return;
+      }
+      resolve(response || null);
+    });
+  });
+}
+
+async function runDetectorRefreshInTab(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async () => {
+        if (typeof YurrrDetector !== 'undefined' && YurrrDetector?.refresh) {
+          YurrrDetector.refresh();
+          return true;
+        }
+        if (
+          typeof YurrrDetector !== 'undefined' &&
+          YurrrDetector?.tryAutoFill &&
+          typeof YurrrHeuristics !== 'undefined'
+        ) {
+          const fillChecks = [];
+          const passwordFields = document.querySelectorAll('input[type="password"]');
+          for (const passwordField of passwordFields) {
+            const form = passwordField.closest('form');
+            if (YurrrHeuristics.isRegistrationForm?.(form)) continue;
+            if (YurrrHeuristics.isPasswordChangeForm?.(form)) {
+              const currentPasswordField = YurrrHeuristics.findCurrentPasswordField?.(form);
+              if (currentPasswordField && passwordField !== currentPasswordField) continue;
+            }
+            fillChecks.push(
+              YurrrDetector.tryAutoFill(
+                YurrrHeuristics.findUsernameField?.(passwordField) || null,
+                passwordField,
+                { allowAutofill: true },
+              )
+            );
+          }
+
+          await Promise.allSettled(fillChecks);
+          return fillChecks.length > 0;
+        }
+        return false;
+      },
+    });
+    return results.some((result) => result?.result === true);
+  } catch {
+    return false;
+  }
+}
+
+async function injectContentScriptsIntoTab(tabId) {
+  for (const file of CONTENT_STYLE_FILES) {
+    try {
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: [file],
+      });
+    } catch {
+      // CSS may already be present or the frame may reject injection.
+    }
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: CONTENT_SCRIPT_FILES,
+  });
+}
+
+async function refreshActiveTabContentScripts() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs[0];
+  if (!tab?.id || !isCredentialPageAllowed(tab.url || '')) {
+    return { refreshed: false, reason: 'unsupported_url' };
+  }
+
+  const ping = await sendTabMessage(tab.id, { type: 'YURRR_REFRESH_FORMS' });
+  if (ping?.ok) {
+    return { refreshed: true, injected: false };
+  }
+
+  if (await runDetectorRefreshInTab(tab.id)) {
+    return { refreshed: true, injected: false };
+  }
+
+  try {
+    await injectContentScriptsIntoTab(tab.id);
+  } catch (err) {
+    return {
+      refreshed: false,
+      injected: false,
+      reason: err?.message || 'content_script_injection_failed',
+    };
+  }
+
+  const refreshed = await sendTabMessage(tab.id, { type: 'YURRR_REFRESH_FORMS' });
+  return { refreshed: Boolean(refreshed?.ok), injected: true };
 }
 
 function normalizeDomain(value) {
@@ -678,6 +921,9 @@ async function handleMessage(message, sender) {
       }
     }
 
+    case 'REFRESH_ACTIVE_TAB':
+      return await refreshActiveTabContentScripts();
+
     case 'LIST_ENTRIES': {
       await session.resetAutoLock();
       return await api.listEntries(payload?.domain);
@@ -773,14 +1019,11 @@ async function handleMessage(message, sender) {
         }));
 
       const preferredUsername = normalizeUsername(payload?.preferredUsername || await getPendingUsername(domain));
-      if (preferredUsername) {
-        credentials.sort((a, b) => {
-          const aMatch = normalizeUsername(a.username) === preferredUsername ? 0 : 1;
-          const bMatch = normalizeUsername(b.username) === preferredUsername ? 0 : 1;
-          return aMatch - bMatch;
-        });
-      }
-      return { credentials };
+      const lastSelectedCredential = await getLastSelectedCredential(domain);
+      return {
+        credentials: sortCredentialsForFill(credentials, preferredUsername, lastSelectedCredential),
+        lastSelectedCredentialId: lastSelectedCredential?.id || null,
+      };
     }
 
     case 'GET_CREDENTIAL_FOR_FILL': {
@@ -799,25 +1042,20 @@ async function handleMessage(message, sender) {
       }
 
       await session.resetAutoLock();
-      const entries = await session.getCredentialsForDomain(domain);
-      const entry = entries.find((item) => String(item.id) === String(payload.id));
-      if (!entry || !isCredentialAllowedForPage(entry, pageUrl)) {
+      return { credential: await getCredentialForPageById(payload.id, pageUrl) };
+    }
+
+    case 'GET_CREDENTIAL_FOR_AUTOFILL': {
+      if (!(await session.isUnlocked()) || !(await isAutofillEnabled())) {
         return { credential: null };
       }
 
-      const detail = await api.getEntry(entry.id);
-      if (!isCredentialAllowedForPage(detail, pageUrl)) {
+      const pageUrl = getMessagePageUrl(payload, sender);
+      if (!isCredentialPageAllowed(pageUrl) || !payload.id) {
         return { credential: null };
       }
 
-      return {
-        credential: {
-          id: detail.id,
-          username: detail.username,
-          password: detail.password,
-          website_url: detail.website_url,
-        },
-      };
+      return { credential: await getCredentialForPageById(payload.id, pageUrl) };
     }
 
     case 'GET_EMAIL_SUGGESTIONS': {
@@ -825,6 +1063,9 @@ async function handleMessage(message, sender) {
       const emails = await getEmailSuggestionsForPage(pageUrl);
       return { emails };
     }
+
+    case 'REMEMBER_SELECTED_CREDENTIAL':
+      return { stored: await rememberSelectedCredentialForPage(payload, sender) };
 
     case 'PENDING_USERNAME': {
       const pageUrl = getMessagePageUrl(payload, sender);

@@ -163,6 +163,19 @@
         <small>Reopen the last password detail view within this many minutes. Use 0 to disable it.</small>
       </div>
 
+      <div class="field">
+        <label class="checkbox-row" for="autofill-enabled">
+          <input type="checkbox" id="autofill-enabled">
+          <span class="checkbox-indicator" aria-hidden="true">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="m5 12 4 4 10-10" />
+            </svg>
+          </span>
+          <span>Autofill saved logins automatically</span>
+        </label>
+        <small>When enabled, Yurrr fills login forms as soon as it detects matching username/email and password fields. If a site has multiple logins, it uses the last one you picked manually.</small>
+      </div>
+
       <div class="actions">
         <button id="save-session-btn" class="btn btn-primary" type="button">
           <span class="btn-content">

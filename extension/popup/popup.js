@@ -351,6 +351,23 @@ async function sendMessage(type, payload = {}) {
   });
 }
 
+let activeTabRefreshInProgress = false;
+
+async function refreshActiveCredentialTab() {
+  if (activeTabRefreshInProgress) return;
+  activeTabRefreshInProgress = true;
+
+  try {
+    await sendMessage('REFRESH_ACTIVE_TAB');
+  } catch {
+    // Restricted browser pages or tabs without host access cannot be refreshed.
+  } finally {
+    activeTabRefreshInProgress = false;
+  }
+}
+
+window.refreshActiveCredentialTab = refreshActiveCredentialTab;
+
 const ICONS = {
   lock: [
     '<path d="M8.5 10V7.5a3.5 3.5 0 1 1 7 0V10" />',
@@ -530,6 +547,7 @@ async function showUnlockedVault() {
   LoginScreen.hide();
   hideAllScreens();
   document.getElementById('lock-btn').classList.remove('hidden');
+  void refreshActiveCredentialTab();
   if (await EntryDetail.tryRestore?.()) {
     return;
   }

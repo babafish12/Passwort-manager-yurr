@@ -9,6 +9,7 @@ const YurrrDetector = {
   scanQueued: false,
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
+  autofilledPasswordFields: new WeakMap(),
   observedSubmitForms: new WeakSet(),
   savePromptTimer: null,
   saveBannerCleanup: null,
@@ -27,9 +28,7 @@ const YurrrDetector = {
     if (this.initialized) return;
     this.initialized = true;
 
-    this.removeEmailSuggestionsDatalist();
-    this.checkPendingCredentials();
-    this.scanForms();
+    this.refresh({ retryKnown: false });
 
     // Watch for DOM changes (SPAs) — debounced via rAF
     const observer = new MutationObserver(() => {
@@ -41,6 +40,13 @@ const YurrrDetector = {
       });
     });
     observer.observe(document.body, { childList: true, subtree: true });
+  },
+
+  refresh({ retryKnown = true } = {}) {
+    this.removeEmailSuggestionsDatalist();
+    void this.checkPendingCredentials();
+    this.scanForms({ retryKnown });
+    return true;
   },
 
   async sendRuntimeMessage(type, payload = {}) {
@@ -382,13 +388,24 @@ const YurrrDetector = {
     return String(value || '').trim().toLowerCase();
   },
 
-  selectCredential(credentials, preferredUsername) {
+  selectCredential(credentials, preferredUsername, lastSelectedCredentialId = null) {
     if (!credentials.length) return null;
     const preferred = this.normalizeUsername(preferredUsername);
-    if (!preferred) return credentials[0];
+    const lastSelected = lastSelectedCredentialId
+      ? credentials.find((cred) => String(cred.id) === String(lastSelectedCredentialId))
+      : null;
 
-    const exact = credentials.find((cred) => this.normalizeUsername(cred.username) === preferred);
-    return exact || credentials[0];
+    if (!preferred) {
+      return lastSelected || (credentials.length === 1 ? credentials[0] : null);
+    }
+
+    const exactMatches = credentials
+      .filter((cred) => this.normalizeUsername(cred.username) === preferred);
+    if (lastSelected && this.normalizeUsername(lastSelected.username) === preferred) {
+      return lastSelected;
+    }
+
+    return exactMatches.length === 1 ? exactMatches[0] : null;
   },
 
   async rememberUsername(domain, url, username) {
@@ -447,16 +464,33 @@ const YurrrDetector = {
     });
   },
 
-  scanForms() {
+  scanForms({ retryKnown = false } = {}) {
     const passwordFields = document.querySelectorAll('input[type="password"]');
 
     for (const pwField of passwordFields) {
-      if (this.detectedForms.has(pwField)) continue;
-      this.detectedForms.add(pwField);
-
       const form = pwField.closest('form');
       const resolveUsernameField = () => YurrrHeuristics.findUsernameField(pwField);
       const initialUsernameField = resolveUsernameField();
+
+      if (this.detectedForms.has(pwField)) {
+        const shouldRetryKnown = retryKnown
+          || (
+            this.autofilledPasswordFields.has(pwField) &&
+            String(pwField.value || '').length === 0
+          );
+        if (shouldRetryKnown) {
+          const isPasswordChange = YurrrHeuristics.isPasswordChangeForm(form);
+          const isRegistration = YurrrHeuristics.isRegistrationForm(form);
+          const currentPasswordField = isPasswordChange
+            ? YurrrHeuristics.findCurrentPasswordField(form)
+            : null;
+          if (!isRegistration && (!isPasswordChange || pwField === currentPasswordField)) {
+            this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
+          }
+        }
+        continue;
+      }
+      this.detectedForms.add(pwField);
 
       if (initialUsernameField) {
         this.detectedForms.add(initialUsernameField);
@@ -466,9 +500,11 @@ const YurrrDetector = {
       if (isPasswordChange) {
         const currentPasswordField = YurrrHeuristics.findCurrentPasswordField(form);
         if (pwField === currentPasswordField) {
-          this.tryAutoFill(initialUsernameField, pwField);
+          this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
           pwField.addEventListener('focus', () => {
-            this.tryAutoFill(resolveUsernameField(), pwField, true, pwField);
+            const usernameField = resolveUsernameField();
+            this.attachPicker(pwField, usernameField, pwField);
+            this.attachPicker(usernameField, usernameField, pwField);
           });
         } else {
           pwField.addEventListener('focus', () => {
@@ -507,11 +543,13 @@ const YurrrDetector = {
           void this.applyEmailSuggestions(emailField);
         }
       } else {
-        this.tryAutoFill(initialUsernameField, pwField);
+        this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
 
         // Re-evaluate dynamically for multi-step/login forms that mutate fields after initial scan.
         pwField.addEventListener('focus', () => {
-          this.tryAutoFill(resolveUsernameField(), pwField, true, pwField);
+          const usernameField = resolveUsernameField();
+          this.attachPicker(pwField, usernameField, pwField);
+          this.attachPicker(usernameField, usernameField, pwField);
         });
       }
 
@@ -556,53 +594,205 @@ const YurrrDetector = {
     }
   },
 
-  async tryAutoFill(usernameField, passwordField, openOnReady = false, pickerTarget = null) {
-    if (!this.isCredentialPageAllowed()) return;
-
+  async loadCredentialsForFields(usernameField) {
     const domain = window.location.hostname;
+    let preferredUsername = String(usernameField?.value || '').trim();
+    if (!preferredUsername) {
+      preferredUsername = await this.getRememberedUsername(domain);
+    }
 
-    try {
-      let preferredUsername = usernameField?.value || '';
-      if (!preferredUsername) {
-        preferredUsername = await this.getRememberedUsername(domain);
+    const response = await this.sendRuntimeMessage('CHECK_CREDENTIALS', {
+      domain,
+      preferredUsername,
+      pageUrl: window.location.href,
+    });
+
+    return {
+      credentials: Array.isArray(response?.credentials) ? response.credentials : [],
+      preferredUsername,
+      lastSelectedCredentialId: response?.lastSelectedCredentialId || null,
+    };
+  },
+
+  canAutofillWithCredential(usernameField, passwordField, credential, options = {}) {
+    if (!passwordField || !credential?.id) return false;
+    if (!passwordField.isConnected) return false;
+    if (YurrrHeuristics.isHidden(passwordField)) return false;
+    if (String(passwordField.value || '').length > 0) return false;
+
+    if (!usernameField) {
+      return options.allowMissingUsername === true;
+    }
+
+    if (!usernameField.isConnected || YurrrHeuristics.isHidden(usernameField)) return false;
+
+    const currentUsername = String(usernameField.value || '').trim();
+    if (!currentUsername) return options.allowMissingUsername === true;
+
+    return this.normalizeUsername(currentUsername) === this.normalizeUsername(credential.username);
+  },
+
+  shouldAutofillCredentialWithoutTypedUsername(credential, credentials, preferredUsername, lastSelectedCredentialId) {
+    if (!credential?.id) return false;
+
+    const preferred = this.normalizeUsername(preferredUsername);
+    if (preferred) {
+      const matchingCredentials = credentials
+        .filter((item) => this.normalizeUsername(item.username) === preferred);
+      if (lastSelectedCredentialId && String(credential.id) === String(lastSelectedCredentialId)) {
+        return matchingCredentials.some((item) => String(item.id) === String(credential.id));
       }
 
-      const response = await this.sendRuntimeMessage('CHECK_CREDENTIALS', {
-        domain,
+      return matchingCredentials.length === 1 &&
+        String(matchingCredentials[0].id) === String(credential.id);
+    }
+
+    if (lastSelectedCredentialId && String(credential.id) === String(lastSelectedCredentialId)) {
+      return true;
+    }
+
+    return credentials.length === 1;
+  },
+
+  async tryDirectAutofill(usernameField, passwordField, credentials, preferredUsername, lastSelectedCredentialId) {
+    if (!passwordField) {
+      return;
+    }
+
+    if (
+      this.autofilledPasswordFields.has(passwordField) &&
+      String(passwordField.value || '').length > 0
+    ) {
+      return;
+    }
+
+    const credential = this.selectCredential(credentials, preferredUsername, lastSelectedCredentialId);
+    const typedUsername = String(usernameField?.value || '').trim();
+    const allowMissingUsername = !typedUsername
+      && this.shouldAutofillCredentialWithoutTypedUsername(
+        credential,
+        credentials,
         preferredUsername,
+        lastSelectedCredentialId,
+      );
+    if (!this.canAutofillWithCredential(usernameField, passwordField, credential, { allowMissingUsername })) {
+      return;
+    }
+
+    try {
+      const response = await this.sendRuntimeMessage('GET_CREDENTIAL_FOR_AUTOFILL', {
+        id: credential.id,
+        domain: window.location.hostname,
         pageUrl: window.location.href,
       });
-      const creds = response.credentials;
-      if (!creds || creds.length === 0) return;
+      const fillCredential = response?.credential;
+      const allowReturnedMissingUsername = !typedUsername
+        && this.shouldAutofillCredentialWithoutTypedUsername(
+          fillCredential,
+          credentials,
+          preferredUsername,
+          lastSelectedCredentialId,
+        );
+      if (!this.canAutofillWithCredential(
+        usernameField,
+        passwordField,
+        fillCredential,
+        { allowMissingUsername: allowReturnedMissingUsername },
+      )) {
+        return;
+      }
 
-      // Attach picker to fields — opens on focus/click
-      this.attachPicker(passwordField, usernameField, passwordField, creds, preferredUsername);
-      this.attachPicker(usernameField, usernameField, passwordField, creds, preferredUsername);
-      if (openOnReady && pickerTarget?.isConnected && document.activeElement === pickerTarget) {
-        this.showPicker(pickerTarget, usernameField, passwordField, creds, preferredUsername);
+      this.fillFields(usernameField, passwordField, fillCredential);
+      this.autofilledPasswordFields.set(passwordField, {
+        credentialId: String(fillCredential.id),
+        filledAt: Date.now(),
+      });
+    } catch {
+      // Autofill is opt-in and best-effort; manual picker remains available.
+    }
+  },
+
+  async tryAutoFill(usernameField, passwordField, options = {}) {
+    if (!this.isCredentialPageAllowed()) return;
+
+    const { allowAutofill = false } = options;
+
+    this.attachPicker(passwordField, usernameField, passwordField);
+    this.attachPicker(usernameField, usernameField, passwordField);
+
+    try {
+      const {
+        credentials,
+        preferredUsername,
+        lastSelectedCredentialId,
+      } = await this.loadCredentialsForFields(usernameField);
+      if (!credentials.length) return;
+
+      if (allowAutofill) {
+        await this.tryDirectAutofill(
+          usernameField,
+          passwordField,
+          credentials,
+          preferredUsername,
+          lastSelectedCredentialId,
+        );
       }
     } catch {
       // Vault likely locked, do nothing
     }
   },
 
-  attachPicker(targetField, usernameField, passwordField, credentials, preferredUsername = '') {
+  async openCredentialPicker(targetField, usernameField, passwordField, onClose) {
+    if (!targetField?.isConnected) return false;
+
+    try {
+      const { credentials, preferredUsername } = await this.loadCredentialsForFields(usernameField);
+      if (!credentials.length || !targetField.isConnected) return false;
+      this.showPicker(targetField, usernameField, passwordField, credentials, preferredUsername, onClose);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  attachPicker(targetField, usernameField, passwordField) {
     if (!targetField) return;
+    targetField.yurrrPickerContext = { usernameField, passwordField };
     if (targetField.dataset.yurrrPickerAttached === '1') return;
     targetField.dataset.yurrrPickerAttached = '1';
 
     let pickerOpen = false;
 
-    const openPicker = () => {
+    const openPicker = async () => {
       if (pickerOpen) return;
       pickerOpen = true;
-      this.showPicker(targetField, usernameField, passwordField, credentials, preferredUsername, () => {
+      const context = targetField.yurrrPickerContext || {};
+      const resolvedPasswordField = context.passwordField
+        || ((targetField.type || '').toLowerCase() === 'password' ? targetField : null);
+      const resolvedUsernameField = resolvedPasswordField
+        ? YurrrHeuristics.findUsernameField(resolvedPasswordField) || context.usernameField
+        : context.usernameField || targetField;
+      const opened = await this.openCredentialPicker(targetField, resolvedUsernameField, resolvedPasswordField, () => {
         pickerOpen = false;
       });
+      if (!opened) pickerOpen = false;
     };
 
     targetField.addEventListener('focus', openPicker);
     targetField.addEventListener('click', openPicker);
+  },
+
+  async rememberSelectedCredential(id) {
+    if (!id) return;
+    try {
+      await this.sendRuntimeMessage('REMEMBER_SELECTED_CREDENTIAL', {
+        id,
+        domain: window.location.hostname,
+        pageUrl: window.location.href,
+      });
+    } catch {
+      // Remembering the last manual pick is non-critical.
+    }
   },
 
   showPicker(targetField, usernameField, passwordField, credentials, preferredUsername, onClose) {
@@ -769,6 +959,7 @@ const YurrrDetector = {
           if (!fillCredential) return;
           this.fillFields(usernameField, passwordField, fillCredential);
           this.rememberUsername(window.location.hostname, window.location.href, fillCredential.username);
+          void this.rememberSelectedCredential(fillCredential.id);
         } catch {
           return;
         } finally {
@@ -1119,3 +1310,14 @@ if (document.readyState === 'loading') {
 } else {
   YurrrDetector.init();
 }
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== 'YURRR_REFRESH_FORMS') {
+    return false;
+  }
+
+  Promise.resolve(YurrrDetector.refresh())
+    .then(() => sendResponse({ ok: true }))
+    .catch(() => sendResponse({ ok: false }));
+  return true;
+});

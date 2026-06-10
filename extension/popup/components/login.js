@@ -190,6 +190,7 @@ const LoginScreen = {
         EntryList.show();
       }
       document.getElementById('lock-btn').classList.remove('hidden');
+      void window.refreshActiveCredentialTab?.();
     } catch (err) {
       this.errorEl.textContent = err.message || 'Login failed';
       this.errorEl.classList.remove('hidden');

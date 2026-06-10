@@ -2,6 +2,7 @@ const STORAGE_KEY = 'yurrr_server_url';
 const DEFAULT_URL = 'https://localhost:8443';
 const STORAGE_KEY_EMAIL_SUGGESTIONS = 'yurrr_email_suggestions';
 const STORAGE_KEY_ENABLE_FAVICONS = 'yurrr_enable_favicons';
+const STORAGE_KEY_AUTOFILL_ENABLED = 'yurrr_autofill_enabled';
 const DECRYPTED_EXPORT_CONFIRMATION = 'EXPORT DECRYPTED VAULT';
 const MAX_EMAIL_SUGGESTIONS = 100;
 const SESSION_MODES = new Set(['ephemeral', 'persistent', 'inactivity', 'never']);
@@ -209,6 +210,7 @@ const sessionStatusEl = document.getElementById('session-status');
 const autoLockField = document.getElementById('auto-lock-field');
 const autoLockInput = document.getElementById('auto-lock-minutes');
 const detailResumeInput = document.getElementById('detail-resume-minutes');
+const autofillEnabledInput = document.getElementById('autofill-enabled');
 const emailSuggestionsInput = document.getElementById('email-suggestions');
 const saveEmailsBtn = document.getElementById('save-emails-btn');
 const emailStatusEl = document.getElementById('email-status');
@@ -224,13 +226,19 @@ function normalizeDetailResumeMinutes(value) {
 }
 
 chrome.storage.local.get(
-  [STORAGE_KEY_SESSION_MODE, STORAGE_KEY_AUTO_LOCK_MINUTES, STORAGE_KEY_DETAIL_RESUME_MINUTES],
+  [
+    STORAGE_KEY_SESSION_MODE,
+    STORAGE_KEY_AUTO_LOCK_MINUTES,
+    STORAGE_KEY_DETAIL_RESUME_MINUTES,
+    STORAGE_KEY_AUTOFILL_ENABLED,
+  ],
   (result) => {
     const storedMode = result[STORAGE_KEY_SESSION_MODE] || 'ephemeral';
     const mode = SESSION_MODES.has(storedMode) ? storedMode : 'ephemeral';
     sessionModeSelect.value = mode;
     autoLockInput.value = result[STORAGE_KEY_AUTO_LOCK_MINUTES] || 15;
     detailResumeInput.value = normalizeDetailResumeMinutes(result[STORAGE_KEY_DETAIL_RESUME_MINUTES]);
+    autofillEnabledInput.checked = result[STORAGE_KEY_AUTOFILL_ENABLED] === true;
     updateAutoLockVisibility(mode);
   }
 );
@@ -249,6 +257,7 @@ saveSessionBtn.addEventListener('click', () => {
   const data = {
     [STORAGE_KEY_SESSION_MODE]: mode,
     [STORAGE_KEY_DETAIL_RESUME_MINUTES]: detailResumeMinutes,
+    [STORAGE_KEY_AUTOFILL_ENABLED]: autofillEnabledInput.checked,
   };
   if (mode === 'inactivity') {
     data[STORAGE_KEY_AUTO_LOCK_MINUTES] = minutes;
@@ -267,7 +276,10 @@ saveSessionBtn.addEventListener('click', () => {
     const resumeMessage = detailResumeMinutes === 0
       ? ' Entry restore is disabled.'
       : ` Entry restore window is ${detailResumeMinutes} minute${detailResumeMinutes === 1 ? '' : 's'}.`;
-    const fullMessage = `${message}${resumeMessage}`;
+    const autofillMessage = autofillEnabledInput.checked
+      ? ' Autofill is enabled.'
+      : ' Autofill is disabled.';
+    const fullMessage = `${message}${resumeMessage}${autofillMessage}`;
     sessionStatusEl.textContent = fullMessage;
     sessionStatusEl.className = 'status success';
     showToast(fullMessage, 'success');
