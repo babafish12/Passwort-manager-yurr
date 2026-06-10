@@ -23,6 +23,7 @@ exports, export the vault, and manage cards, addresses, and passkey metadata.
 ## Contents
 
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Architecture](#architecture)
 - [Security model](#security-model)
 - [Requirements](#requirements)
@@ -66,6 +67,12 @@ exports, export the vault, and manage cards, addresses, and passkey metadata.
 - CORS restrictions for extension and local/private origins.
 - HTTPS by default with generated self-signed certificates.
 - WAL-aware update script with database backup support.
+
+## Screenshots
+
+![Yurrr autofill picker](docs/screenshots/autofill-polished.png)
+
+![Yurrr security settings](docs/screenshots/settings-polished.png)
 
 ## Architecture
 

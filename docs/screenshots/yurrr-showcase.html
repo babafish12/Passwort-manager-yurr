@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Yurrr Product Screenshots</title>
+  <style>
+    :root {
+      --bg: #0b0f13;
+      --panel: #12191f;
+      --panel-2: #172229;
+      --panel-3: #1d2a33;
+      --text: #f5f8f9;
+      --muted: #a7b5be;
+      --subtle: #768690;
+      --line: rgba(198, 214, 224, 0.16);
+      --line-strong: rgba(198, 214, 224, 0.28);
+      --green: #4dd889;
+      --green-2: #2dbb70;
+      --blue: #74a7ff;
+      --yellow: #f2bf64;
+      --danger: #ff766d;
+      --shadow: 0 28px 80px rgba(0, 0, 0, 0.42);
+      color-scheme: dark;
+      font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding-bottom: 180px;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(77, 216, 137, 0.12), transparent 30%),
+        radial-gradient(circle at 85% 20%, rgba(116, 167, 255, 0.11), transparent 34%),
+        linear-gradient(135deg, #090c10 0%, #0d1318 45%, #0a0d11 100%);
+      color: var(--text);
+    }
+
+    .shot {
+      width: 1440px;
+      height: 960px;
+      margin: 0 auto;
+      position: relative;
+      overflow: hidden;
+      padding: 72px 88px;
+    }
+
+    .shot::before {
+      content: "";
+      position: absolute;
+      inset: 34px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      pointer-events: none;
+    }
+
+    .topbar {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+      font-weight: 750;
+      font-size: 18px;
+    }
+
+    .mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      color: var(--green);
+      background: rgba(77, 216, 137, 0.12);
+      border: 1px solid rgba(77, 216, 137, 0.28);
+    }
+
+    .window {
+      background: rgba(16, 23, 29, 0.94);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .browser {
+      border-radius: 14px;
+      min-height: 730px;
+    }
+
+    .browser-chrome {
+      height: 58px;
+      padding: 0 18px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      border-bottom: 1px solid var(--line);
+      background: #10161b;
+    }
+
+    .dots {
+      display: flex;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--subtle);
+    }
+
+    .dot:nth-child(1) { background: #ff6b61; }
+    .dot:nth-child(2) { background: #f2bd58; }
+    .dot:nth-child(3) { background: #4dd889; }
+
+    .urlbar {
+      flex: 1;
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 13px;
+      border-radius: 7px;
+      background: #0c1115;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .browser-body {
+      position: relative;
+      min-height: 672px;
+      padding: 56px 68px;
+      background:
+        linear-gradient(90deg, rgba(116, 167, 255, 0.08), transparent 44%),
+        #0f151a;
+    }
+
+    .login-card {
+      width: 470px;
+      padding: 34px;
+      background: #f8fafb;
+      color: #18232b;
+      border: 1px solid #dbe3e8;
+      border-radius: 12px;
+      box-shadow: 0 24px 62px rgba(0, 0, 0, 0.32);
+    }
+
+    .site-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #42515b;
+      font-weight: 650;
+      font-size: 14px;
+      margin-bottom: 28px;
+    }
+
+    .site-icon {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: #e7f2ec;
+      color: #16824d;
+      font-weight: 800;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      color: #111a20;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+
+    .copy {
+      margin: 0 0 28px;
+      color: #66747e;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .field {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      color: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      height: 44px;
+      padding: 0 13px;
+      border-radius: 8px;
+      border: 1px solid #cbd6dc;
+      background: #fff;
+      color: #1a252d;
+      font: inherit;
+      font-size: 14px;
+    }
+
+    .password-row {
+      position: relative;
+    }
+
+    .yurrr-picker {
+      position: absolute;
+      left: 310px;
+      top: 258px;
+      width: 324px;
+      border: 1px solid rgba(77, 216, 137, 0.74);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #111827;
+      color: #eaf1f0;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.44);
+    }
+
+    .picker-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 42px;
+      padding: 0 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      background: #16213e;
+      color: var(--green);
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .picker-head span:last-child {
+      margin-left: auto;
+      color: #8d9ba5;
+      font-weight: 650;
+      font-size: 11px;
+    }
+
+    .picker-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .picker-item.active {
+      background: rgba(77, 216, 137, 0.1);
+    }
+
+    .avatar {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: #0f3460;
+      color: var(--green);
+      font-weight: 800;
+    }
+
+    .picker-user {
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .picker-pass {
+      margin-top: 2px;
+      color: #7a8791;
+      font-size: 11px;
+      letter-spacing: 2px;
+    }
+
+    .button {
+      height: 44px;
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
+      gap: 8px;
+      padding: 0 16px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--green);
+      color: #05150d;
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .callout {
+      position: absolute;
+      right: 72px;
+      bottom: 70px;
+      width: 430px;
+      padding: 22px;
+      border-radius: 10px;
+      border: 1px solid rgba(77, 216, 137, 0.26);
+      background: rgba(17, 24, 31, 0.9);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38);
+    }
+
+    .callout h2,
+    .settings-card h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .callout p,
+    .settings-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+      font-size: 15px;
+    }
+
+    .settings-layout {
+      display: grid;
+      grid-template-columns: 560px 1fr;
+      gap: 44px;
+      align-items: start;
+      margin-top: 38px;
+    }
+
+    .settings-card {
+      border-radius: 14px;
+      padding: 34px;
+      background: rgba(18, 25, 31, 0.95);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+    }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      margin-bottom: 26px;
+      color: var(--text);
+      font-size: 21px;
+      font-weight: 800;
+    }
+
+    .settings-field {
+      padding: 18px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .settings-field:first-of-type {
+      border-top: 0;
+    }
+
+    .settings-field small {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 13px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0;
+    }
+
+    .check {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      border-radius: 5px;
+      color: #06150d;
+      background: var(--green);
+      font-weight: 900;
+    }
+
+    .metrics {
+      display: grid;
+      gap: 16px;
+    }
+
+    .metric {
+      padding: 20px;
+      border-radius: 10px;
+      background: rgba(23, 34, 41, 0.95);
+      border: 1px solid var(--line);
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--text);
+      font-size: 26px;
+      margin-bottom: 6px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    svg {
+      width: 18px;
+      height: 18px;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+    }
+
+    @media (max-width: 640px) {
+      .shot {
+        width: 455px;
+        height: 960px;
+        padding: 24px 16px;
+      }
+
+      .shot::before {
+        inset: 8px;
+      }
+
+      .topbar {
+        height: auto;
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+
+      .topbar > span {
+        max-width: 390px;
+        line-height: 1.35;
+      }
+
+      .browser {
+        min-height: 842px;
+      }
+
+      .browser-chrome {
+        height: auto;
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 14px;
+      }
+
+      .urlbar {
+        width: 100%;
+        flex: none;
+      }
+
+      .browser-body {
+        min-height: 764px;
+        padding: 24px 18px;
+      }
+
+      .login-card {
+        width: 100%;
+        padding: 26px 22px;
+      }
+
+      .yurrr-picker {
+        left: 42px;
+        top: 338px;
+        width: 330px;
+      }
+
+      .callout {
+        left: 22px;
+        right: 22px;
+        bottom: 28px;
+        width: auto;
+        padding: 18px;
+      }
+
+      .callout h2,
+      .settings-card h2 {
+        font-size: 21px;
+      }
+
+      .settings-layout {
+        grid-template-columns: 1fr;
+        gap: 18px;
+        margin-top: 16px;
+      }
+
+      .settings-card {
+        padding: 22px;
+      }
+
+      .settings-field {
+        padding: 14px 0;
+      }
+
+      .metrics {
+        gap: 10px;
+      }
+
+      .metric {
+        padding: 14px;
+      }
+
+      .metric strong {
+        font-size: 20px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <section id="autofill" class="shot">
+    <div class="topbar">
+      <div class="brand">
+        <div class="mark">
+          <svg viewBox="0 0 24 24"><path d="M14 8a4 4 0 1 1 0 8H7a3 3 0 0 1 0-6h7"/><path d="m14 12 7 0"/><path d="m18 9 0 6"/></svg>
+        </div>
+        Yurrr Password Manager
+      </div>
+      <span>Automatic autofill, only when the match is unambiguous</span>
+    </div>
+    <div class="window browser">
+      <div class="browser-chrome">
+        <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        <div class="urlbar">
+          <svg viewBox="0 0 24 24"><path d="M8.5 10V7.5a3.5 3.5 0 1 1 7 0V10"/><rect x="5" y="10" width="14" height="10" rx="2"/></svg>
+          https://accounts.example.com/login
+        </div>
+      </div>
+      <div class="browser-body">
+        <div class="login-card">
+          <div class="site-pill"><span class="site-icon">E</span> Example Accounts</div>
+          <h1>Welcome back</h1>
+          <p class="copy">Sign in to continue to your account dashboard.</p>
+          <div class="field">
+            <label>Email</label>
+            <input value="steve@example.com">
+          </div>
+          <div class="field password-row">
+            <label>Password</label>
+            <input value="••••••••••••" type="text">
+          </div>
+          <button class="button">Continue</button>
+        </div>
+        <div class="yurrr-picker">
+          <div class="picker-head">
+            <svg viewBox="0 0 24 24"><path d="M12.65 10a6 6 0 1 0-1.3 0H2v4h2v4h4v-4h3.35zM9 6a3 3 0 1 1 0 .01V6z"/></svg>
+            Yurrr
+            <span>2 saved</span>
+          </div>
+          <div class="picker-item active">
+            <div class="avatar">S</div>
+            <div>
+              <div class="picker-user">steve@example.com</div>
+              <div class="picker-pass">••••••••</div>
+            </div>
+          </div>
+          <div class="picker-item">
+            <div class="avatar">W</div>
+            <div>
+              <div class="picker-user">work@example.com</div>
+              <div class="picker-pass">••••••••</div>
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <h2>Safer autofill for real login flows</h2>
+          <p>Yurrr refreshes the active page after unlock and fills only the top-level login form when the matching credential is clear.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="settings" class="shot">
+    <div class="topbar">
+      <div class="brand">
+        <div class="mark">
+          <svg viewBox="0 0 24 24"><path d="M12 3.5 5.5 6v5c0 4.5 2.8 7.9 6.5 9.5 3.7-1.6 6.5-5 6.5-9.5V6L12 3.5Z"/><path d="M9.5 12.2 11.2 14l3.5-4"/></svg>
+        </div>
+        Yurrr Settings
+      </div>
+      <span>Privacy-first defaults with explicit convenience controls</span>
+    </div>
+    <div class="settings-layout">
+      <div class="settings-card">
+        <div class="section-title">
+          <svg viewBox="0 0 24 24"><path d="M8.5 10V7.5a3.5 3.5 0 1 1 7 0V10"/><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M12 14v2.5"/></svg>
+          Security
+        </div>
+        <div class="settings-field">
+          <label>Session Persistence</label>
+          <select>
+            <option>Lock when laptop locks</option>
+          </select>
+          <small>Controls when the vault locks on this browser profile.</small>
+        </div>
+        <div class="settings-field">
+          <label>Open Entry Restore Timeout</label>
+          <input value="5 minutes">
+          <small>Reopen the last password detail view within this window.</small>
+        </div>
+        <div class="settings-field">
+          <label class="checkbox-row"><span class="check">✓</span> Autofill saved logins automatically</label>
+          <small>Uses the last account you picked manually when multiple logins exist, and avoids guessing on ambiguous forms.</small>
+        </div>
+        <button class="button">Save settings</button>
+      </div>
+      <div class="settings-card">
+        <h2>Built for private self-hosting</h2>
+        <p>Automatic autofill stays opt-in, top-frame scoped, and domain-aware while the vault remains protected by the local server session.</p>
+        <div class="metrics" style="margin-top: 28px;">
+          <div class="metric"><strong>Top frame</strong><span>Refresh avoids cross-frame autofill expansion.</span></div>
+          <div class="metric"><strong>Unambiguous</strong><span>Multiple accounts require a typed username or remembered choice.</span></div>
+          <div class="metric"><strong>Local vault</strong><span>No cloud sync or hosted broker in the middle.</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+  <script>
+    const shot = new URLSearchParams(window.location.search).get('shot');
+    if (shot === 'autofill') {
+      document.getElementById('settings')?.remove();
+    } else if (shot === 'settings') {
+      document.getElementById('autofill')?.remove();
+    }
+  </script>
+</body>
+</html>
