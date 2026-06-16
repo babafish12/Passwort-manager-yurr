@@ -11,6 +11,7 @@ export const STORAGE_KEY_AUTO_LOCK_MINUTES = 'yurrr_auto_lock_minutes';
 export const STORAGE_KEY_EMAIL_SUGGESTIONS = 'yurrr_email_suggestions';
 export const STORAGE_KEY_AUTOFILL_ENABLED = 'yurrr_autofill_enabled';
 export const STORAGE_KEY_LAST_SELECTED_CREDENTIALS = 'yurrr_last_selected_credentials';
+export const STORAGE_KEY_CREDENTIAL_METADATA_CACHE = 'yurrr_credential_metadata_cache';
 export const STORAGE_KEY_PENDING_CREDENTIALS = 'yurrr_pending_credentials';
 export const STORAGE_KEY_PENDING_USERNAMES = 'yurrr_pending_usernames';
 export const STORAGE_KEY_CARDS = 'yurrr_cards';

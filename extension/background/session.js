@@ -6,6 +6,7 @@ import {
   STORAGE_KEY_LAST_ACTIVE,
   STORAGE_KEY_AUTO_LOCK_EXPIRES_AT,
   STORAGE_KEY_AUTO_LOCK_MINUTES,
+  STORAGE_KEY_CREDENTIAL_METADATA_CACHE,
   SESSION_MODE_PERSISTENT,
   SESSION_MODE_INACTIVITY,
   SESSION_MODE_NEVER,
@@ -13,6 +14,8 @@ import {
 } from '../lib/constants.js';
 
 const AUTO_LOCK_ALARM = 'auto-lock';
+const CREDENTIAL_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
+const CREDENTIAL_METADATA_CACHE_MAX_DOMAINS = 50;
 
 export class SessionManager {
   constructor(api) {
@@ -153,7 +156,7 @@ export class SessionManager {
     this._clearingToken = true;
     this._tokenGeneration += 1;
     this.api.clearToken();
-    this.credentialCache.clear();
+    await this.clearCache();
     this.updateBadge(false);
 
     try {
@@ -316,13 +319,28 @@ export class SessionManager {
   }
 
   async getCredentialsForDomain(domain) {
-    if (this.credentialCache.has(domain)) {
-      return this.credentialCache.get(domain);
+    const normalizedDomain = this._normalizeDomain(domain);
+    if (!normalizedDomain) {
+      return [];
+    }
+
+    const serverUrl = await this.api.getServerUrl();
+    const memoryRecord = this.credentialCache.get(normalizedDomain);
+    if (this._isFreshCredentialCacheRecord(memoryRecord, serverUrl)) {
+      return memoryRecord.entries;
+    }
+
+    const sessionRecord = await this._readCredentialMetadataCache(normalizedDomain, serverUrl);
+    if (sessionRecord) {
+      this.credentialCache.set(normalizedDomain, sessionRecord);
+      return sessionRecord.entries;
     }
 
     try {
-      const entries = await this.api.listEntries(domain);
-      this.credentialCache.set(domain, entries);
+      const entries = this._sanitizeCredentialMetadata(
+        await this.api.listEntries(normalizedDomain)
+      );
+      await this._writeCredentialMetadataCache(normalizedDomain, serverUrl, entries);
       return entries;
     } catch (err) {
       if (err?.code === 'NETWORK_ERROR' || err?.code === 'AUTH_ERROR') {
@@ -332,7 +350,128 @@ export class SessionManager {
     }
   }
 
-  clearCache() {
+  _normalizeDomain(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  _sanitizeCredentialMetadata(entries) {
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+
+    return entries
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null;
+        const id = String(entry.id || '').trim();
+        if (!id) return null;
+
+        return {
+          id,
+          website_url: String(entry.website_url || ''),
+          website_domain: String(entry.website_domain || ''),
+          username: String(entry.username || ''),
+          favorite: entry.favorite === true,
+          has_favicon: entry.has_favicon === true,
+          created_at: String(entry.created_at || ''),
+          updated_at: String(entry.updated_at || ''),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  _isFreshCredentialCacheRecord(record, serverUrl) {
+    return Boolean(
+      record &&
+      Array.isArray(record.entries) &&
+      typeof record.cachedAt === 'number' &&
+      Date.now() - record.cachedAt < CREDENTIAL_METADATA_CACHE_TTL_MS &&
+      this.api.sameServerOrigin(record.serverUrl, serverUrl)
+    );
+  }
+
+  async _readCredentialMetadataCache(domain, serverUrl) {
+    try {
+      const result = await chrome.storage.session.get(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
+      const cache = result[STORAGE_KEY_CREDENTIAL_METADATA_CACHE];
+      const record = cache && typeof cache === 'object' && !Array.isArray(cache)
+        ? cache[domain]
+        : null;
+      if (!this._isFreshCredentialCacheRecord(record, serverUrl)) {
+        if (record) {
+          await this._removeCredentialMetadataCacheDomain(domain);
+        }
+        return null;
+      }
+
+      return {
+        cachedAt: record.cachedAt,
+        serverUrl: record.serverUrl,
+        entries: this._sanitizeCredentialMetadata(record.entries),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async _writeCredentialMetadataCache(domain, serverUrl, entries) {
+    const record = {
+      cachedAt: Date.now(),
+      serverUrl,
+      entries,
+    };
+    this.credentialCache.set(domain, record);
+
+    try {
+      const result = await chrome.storage.session.get(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
+      const rawCache = result[STORAGE_KEY_CREDENTIAL_METADATA_CACHE];
+      const cache = rawCache && typeof rawCache === 'object' && !Array.isArray(rawCache)
+        ? { ...rawCache }
+        : {};
+      cache[domain] = record;
+
+      const trimmedCache = Object.fromEntries(
+        Object.entries(cache)
+          .filter(([, item]) => this._isFreshCredentialCacheRecord(item, serverUrl))
+          .sort(([, a], [, b]) => b.cachedAt - a.cachedAt)
+          .slice(0, CREDENTIAL_METADATA_CACHE_MAX_DOMAINS)
+      );
+
+      await chrome.storage.session.set({
+        [STORAGE_KEY_CREDENTIAL_METADATA_CACHE]: trimmedCache,
+      });
+    } catch {
+      try {
+        await chrome.storage.session.remove(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
+      } catch {
+        // Ignore cache cleanup failure.
+      }
+    }
+  }
+
+  async _removeCredentialMetadataCacheDomain(domain) {
+    try {
+      const result = await chrome.storage.session.get(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
+      const rawCache = result[STORAGE_KEY_CREDENTIAL_METADATA_CACHE];
+      if (!rawCache || typeof rawCache !== 'object' || Array.isArray(rawCache)) {
+        return;
+      }
+
+      const cache = { ...rawCache };
+      delete cache[domain];
+      await chrome.storage.session.set({
+        [STORAGE_KEY_CREDENTIAL_METADATA_CACHE]: cache,
+      });
+    } catch {
+      // Cache cleanup should never break autofill.
+    }
+  }
+
+  async clearCache() {
     this.credentialCache.clear();
+    try {
+      await chrome.storage.session.remove(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
+    } catch {
+      // Cache cleanup must not block lock/logout.
+    }
   }
 }

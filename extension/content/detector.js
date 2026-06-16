@@ -501,6 +501,7 @@ const YurrrDetector = {
         const currentPasswordField = YurrrHeuristics.findCurrentPasswordField(form);
         if (pwField === currentPasswordField) {
           this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
+          this.retryAutoFillOnInteraction(pwField, resolveUsernameField, pwField, { allowAutofill: true });
           pwField.addEventListener('focus', () => {
             const usernameField = resolveUsernameField();
             this.attachPicker(pwField, usernameField, pwField);
@@ -544,6 +545,7 @@ const YurrrDetector = {
         }
       } else {
         this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
+        this.retryAutoFillOnInteraction(pwField, resolveUsernameField, pwField, { allowAutofill: true });
 
         // Re-evaluate dynamically for multi-step/login forms that mutate fields after initial scan.
         pwField.addEventListener('focus', () => {
@@ -571,6 +573,7 @@ const YurrrDetector = {
 
       void this.applyEmailSuggestions(unField);
       this.tryAutoFill(unField, null);
+      this.retryAutoFillOnInteraction(unField, unField, null);
 
       const form = unField.closest('form');
       if (form) {
@@ -740,6 +743,29 @@ const YurrrDetector = {
     } catch {
       // Vault likely locked, do nothing
     }
+  },
+
+  retryAutoFillOnInteraction(targetField, resolveUsernameField, passwordField, options = {}) {
+    if (!targetField || targetField.dataset.yurrrAutofillRetryAttached === '1') return;
+    targetField.dataset.yurrrAutofillRetryAttached = '1';
+
+    let retryQueued = false;
+    const retry = () => {
+      if (retryQueued) return;
+      retryQueued = true;
+
+      setTimeout(() => {
+        retryQueued = false;
+      }, 250);
+
+      const usernameField = typeof resolveUsernameField === 'function'
+        ? resolveUsernameField()
+        : resolveUsernameField;
+      void this.tryAutoFill(usernameField, passwordField, options);
+    };
+
+    targetField.addEventListener('focus', retry);
+    targetField.addEventListener('click', retry);
   },
 
   async openCredentialPicker(targetField, usernameField, passwordField, onClose) {

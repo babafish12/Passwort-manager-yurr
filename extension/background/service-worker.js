@@ -101,7 +101,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 async function handleServerUrlChange() {
   api.invalidateServerUrlCache();
   faviconCache.clear();
-  session.clearCache();
+  await session.clearCache();
   await session.clearToken();
   await clearAllPendingState();
 }
@@ -936,19 +936,19 @@ async function handleMessage(message, sender) {
 
     case 'CREATE_ENTRY': {
       await session.resetAutoLock();
-      session.clearCache();
+      await session.clearCache();
       return await api.createEntry(payload);
     }
 
     case 'UPDATE_ENTRY': {
       await session.resetAutoLock();
-      session.clearCache();
+      await session.clearCache();
       return await api.updateEntry(payload.id, payload.data);
     }
 
     case 'DELETE_ENTRY': {
       await session.resetAutoLock();
-      session.clearCache();
+      await session.clearCache();
       return await api.deleteEntry(payload.id);
     }
 
@@ -1241,7 +1241,7 @@ async function handleMessage(message, sender) {
         }
 
         await api.updateEntry(match.id, { password });
-        session.clearCache();
+        await session.clearCache();
         await clearPendingUsername(domain);
         await clearPendingCredentials();
         return { saved: true, updated: true };
@@ -1257,14 +1257,14 @@ async function handleMessage(message, sender) {
       if (effectiveUsername) {
         if (decision.action === 'update' && decision.entryId) {
           await api.updateEntry(decision.entryId, { password });
-          session.clearCache();
+          await session.clearCache();
           await clearPendingUsername(domain);
           await clearPendingCredentials();
           return { saved: true, updated: true };
         }
 
         await api.createEntry({ website_url: url, username: effectiveUsername, password });
-        session.clearCache();
+        await session.clearCache();
         await clearPendingUsername(domain);
         await clearPendingCredentials();
         return { saved: true, updated: false };
@@ -1316,7 +1316,7 @@ async function handleMessage(message, sender) {
 
     case 'BULK_IMPORT': {
       await session.resetAutoLock();
-      session.clearCache();
+      await session.clearCache();
       return await api.bulkImport(payload.entries, payload.skipDuplicates);
     }
 
