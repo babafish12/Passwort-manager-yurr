@@ -1,7 +1,8 @@
 // Heuristics for form field detection
 const YurrrHeuristics = {
   usernameKeywordPattern: /(user(name)?|email|e-?mail|login|log[ -]?in|account|acct|identifier|member|signin|sign[ -]?in|mail)/i,
-  negativeKeywordPattern: /(search|query|coupon|promo|captcha|otp|2fa|token|code|postal|zip|city|country|address)/i,
+  negativeKeywordPattern: /(search|query|suche|suchen|durchsuchen|coupon|promo|captcha|otp|2fa|token|code|postal|zip|city|country|address)/i,
+  searchKeywordPattern: /\b(search|query|lookup|find|suche|suchen|durchsuchen)\b/i,
   inputSelector: 'input[type="text"], input[type="email"], input[type="tel"], input:not([type])',
 
   // Find standalone username/email fields when no password field is present
@@ -88,6 +89,8 @@ const YurrrHeuristics = {
 
   isLikelyEmailField(el) {
     if (!el) return false;
+    if (this.isSearchField(el)) return false;
+
     const type = (el.type || '').toLowerCase();
     const autocomplete = (el.autocomplete || '').toLowerCase();
     const inputMode = (el.inputMode || '').toLowerCase();
@@ -97,6 +100,24 @@ const YurrrHeuristics = {
 
     const meta = this.getFieldMeta(el);
     return /(email|e-?mail|mail)/i.test(meta);
+  },
+
+  isSearchField(el) {
+    if (!el) return false;
+
+    const type = (el.type || '').toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    if (type === 'search' || role === 'searchbox') return true;
+
+    const form = typeof el.closest === 'function' ? el.closest('form') : null;
+    const formRole = (form?.getAttribute('role') || '').toLowerCase();
+    if (formRole === 'search') return true;
+
+    if (typeof el.closest === 'function' && el.closest('search,[role="search"]')) {
+      return true;
+    }
+
+    return this.searchKeywordPattern.test(this.getFieldMeta(el));
   },
 
   scoreUsernameCandidate(el) {
@@ -113,6 +134,7 @@ const YurrrHeuristics = {
 
     if (this.usernameKeywordPattern.test(meta)) score += 8;
     if (/(phone|tel|mobile)/i.test(meta)) score += 2; // email/phone combo logins
+    if (this.isSearchField(el)) score -= 20;
     if (this.negativeKeywordPattern.test(meta)) score -= 8;
 
     return score;
