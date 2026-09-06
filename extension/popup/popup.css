@@ -551,6 +551,19 @@ textarea::placeholder {
   margin: 12px 0 8px;
 }
 
+.hint:empty {
+  display: none;
+}
+
+.cache-connection {
+  padding: 8px 16px;
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .cert-hint {
   margin-top: 12px;
   padding: 10px;

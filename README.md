@@ -412,12 +412,38 @@ If you lose it, the encrypted vault cannot be decrypted.
 
 ### Popup states
 
-When the popup opens, Yurrr first shows a short loading state while it checks
-the saved session and server status. This prevents the extension from flashing a
-blank or half-rendered login screen during startup. If the vault is already
-unlocked and the server session is valid, the popup moves directly to the vault
-list. If the server is offline, the popup keeps the login screen visible with a
-clear server-status message and retries while it is open.
+When the popup opens, Yurrr checks the saved session and local auto-lock deadline.
+An unlocked vault reuses its cached password list immediately. With an empty
+cache, the authenticated list request also checks the server session, avoiding
+a separate session request before loading the list. Opening a login shows its
+website and username immediately while any missing password details load.
+
+The popup keeps the password list and up to 20 recently opened login details
+(including passwords and notes) in `chrome.storage.session`. This is temporary
+browser memory, accessible only to trusted extension contexts. It survives
+closing the popup and restarting its service worker, but is cleared on browser
+restart or extension reload. Decrypted popup data is never cached in
+`chrome.storage.local`, sync storage, or the HTTP cache. Autofill retains its
+separate metadata cache and page-scoped credential requests.
+
+Each popup cache record expires five minutes after its last successful server
+fetch; reading it locally does not extend that time. Opening or navigating the
+popup starts a background refresh when the relevant record is at least 30
+seconds old. Returning to the list preserves the search filter. Background
+updates do not navigate away from the selected screen.
+
+If the server is temporarily unreachable, unexpired cached logins remain usable
+with a connection notice. Once a record expires, reload it from the server to
+use its password or notes again; an open detail or edit view also clears expired
+secrets. Saving changes always requires the server. A resumable cached login can
+still open when its list has expired. With neither a valid list nor a resumable
+cached login, the login screen shows the connection status and retries while open.
+
+Manual/automatic lock, session changes, changing the server address, and changing
+the master password clear the popup cache. A rejected server session locks it
+immediately when that response arrives. Changes, deletions, and imports from the
+extension invalidate cached login data. Remote changes are discovered on refresh;
+cached reads do not create additional server audit events.
 
 The popup vault list uses separate sections for passwords, passkeys, cards, and
 addresses. These section controls support mouse and keyboard navigation with

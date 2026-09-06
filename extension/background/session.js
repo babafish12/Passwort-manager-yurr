@@ -12,6 +12,7 @@ import {
   SESSION_MODE_NEVER,
   SESSION_MODES,
 } from '../lib/constants.js';
+import { PopupCache } from './popup-cache.js';
 
 const AUTO_LOCK_ALARM = 'auto-lock';
 const CREDENTIAL_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -21,6 +22,8 @@ export class SessionManager {
   constructor(api) {
     this.api = api;
     this.credentialCache = new Map();
+    this.popupCache = new PopupCache(api, this);
+    this.onLock = () => {};
     this._cachedMode = null;
     this._clearingToken = false;
     this._tokenGeneration = 0;
@@ -61,6 +64,7 @@ export class SessionManager {
   }
 
   async saveToken(token) {
+    await this.clearCache();
     const mode = await this._getMode();
     const serverUrl = await this.api.getServerUrl();
     if (
@@ -160,7 +164,7 @@ export class SessionManager {
     this._clearingToken = true;
     this._tokenGeneration += 1;
     this.api.clearToken();
-    await this.clearCache();
+    await Promise.all([this.clearCache(), this.onLock()]);
     this.updateBadge(false);
 
     try {
@@ -477,6 +481,22 @@ export class SessionManager {
   }
 
   async clearCache() {
+    await this.popupCache.clear();
+    await this.clearCredentialMetadataCache();
+  }
+
+  async mutateEntries(operation) {
+    return this.popupCache.mutate(async () => {
+      await this.clearCredentialMetadataCache();
+      try {
+        return await operation();
+      } finally {
+        await this.clearCredentialMetadataCache();
+      }
+    });
+  }
+
+  async clearCredentialMetadataCache() {
     this.credentialCache.clear();
     try {
       await chrome.storage.session.remove(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);

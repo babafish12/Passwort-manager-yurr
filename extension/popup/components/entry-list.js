@@ -1,6 +1,8 @@
 // Entry list logic
 const EntryList = {
   entries: [],
+  expiresAt: 0,
+  expiryTimer: null,
 
   init() {
     this.screen = document.getElementById('list-screen');
@@ -17,27 +19,62 @@ const EntryList = {
     });
   },
 
-  async show({ animate = true, initialEntries = null, focusSearch = true } = {}) {
+  async show({ animate = true, initialSnapshot = null, focusSearch = true, preserveSearch = false } = {}) {
     const generation = ++window.VaultSections.renderGeneration;
     this.screen.classList.remove('hidden');
     if (animate) {
       window.animatePopupScreen?.(this.screen, 'back');
     }
-    this.searchInput.value = '';
-    this.renderLoadingState('Loading passwords...');
+    if (!preserveSearch) this.searchInput.value = '';
+    if (initialSnapshot) this.applySnapshot(initialSnapshot);
+    else if (this.expiresAt > Date.now()) this.filterEntries();
+    else this.renderLoadingState('Loading passwords...');
 
     try {
-      const entries = Array.isArray(initialEntries) ? initialEntries : await sendMessage('LIST_ENTRIES');
+      const snapshot = initialSnapshot || await sendMessage('POPUP_LIST');
       if (generation !== window.VaultSections.renderGeneration) return;
-      this.entries = entries;
-      this.filterEntries();
+      this.applySnapshot(snapshot);
       if (focusSearch) this.focusSearchInput();
     } catch (err) {
-      if (isSessionLostError(err) || generation !== window.VaultSections.renderGeneration) {
+      if (isSessionLostError(err) || err.code === 'CACHE_CHANGED' || generation !== window.VaultSections.renderGeneration) {
         return;
       }
       this.renderEmptyState(`Could not load passwords. ${err.message || 'Check the server connection.'}`, 'Try again', () => this.show());
       if (focusSearch) this.focusSearchInput();
+    }
+  },
+
+  applySnapshot(snapshot) {
+    if (!snapshot || snapshot.expiresAt <= Date.now()) return;
+    this.entries = snapshot.data;
+    this.expiresAt = snapshot.expiresAt;
+    clearTimeout(this.expiryTimer);
+    this.expiryTimer = setTimeout(() => this.invalidate(), Math.max(0, this.expiresAt - Date.now()));
+    window.updateCacheConnection?.(snapshot.offline);
+    if (!this.screen.classList.contains('hidden') && window.VaultSections.activeTab === 'passwords') {
+      this.filterEntries();
+    }
+  },
+
+  invalidate() {
+    clearTimeout(this.expiryTimer);
+    this.expiresAt = 0;
+    this.entries = [];
+    if (!this.screen.classList.contains('hidden') && window.VaultSections.activeTab === 'passwords') {
+      this.renderEmptyState('Reload passwords to get the latest data.', 'Reload', () => this.show({ preserveSearch: true }));
+    }
+  },
+
+  async refresh({ cacheOnly = true } = {}) {
+    const generation = window.VaultSections.renderGeneration;
+    try {
+      const snapshot = await sendMessage('POPUP_LIST', { activity: false, refresh: false, cacheOnly });
+      if (generation !== window.VaultSections.renderGeneration) return;
+      if (snapshot) this.applySnapshot(snapshot);
+      else this.invalidate();
+    } catch (err) {
+      if (isSessionLostError(err) || err.code === 'CACHE_CHANGED') return;
+      window.updateCacheConnection?.(err.code === 'NETWORK_ERROR');
     }
   },
 

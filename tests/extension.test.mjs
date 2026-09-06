@@ -13,7 +13,7 @@ test('LAN scope includes effective port, including existing URLs and IPv6', () =
 });
 
 function worker() {
-  return loadClassic('extension/background/service-worker.js', '({ isCredentialAllowedForPage, getDomainFromUrl, getSafeCredentialUrlForPage, getCredentialSaveDecision, setPendingUsername, getPendingUsername })', {
+  return loadClassic('extension/background/service-worker.js', '({ ready: startupReady, isCredentialAllowedForPage, getDomainFromUrl, getSafeCredentialUrlForPage, getCredentialSaveDecision, setPendingUsername, getPendingUsername })', {
     ...constants, VaultAPI, SessionManager, YurrrSiteScope,
     chrome: chromeMock(),
   });
@@ -22,6 +22,7 @@ function worker() {
 test('autofill and save prompts isolate LAN ports, including default ports', async () => {
   globalThis.chrome = chromeMock();
   const subject = worker();
+  await subject.ready;
   const saved = { website_url: 'http://192.168.1.10:8080/login', username: 'admin' };
   assert.equal(subject.isCredentialAllowedForPage(saved, 'http://192.168.1.10:8080/other'), true);
   assert.equal(subject.isCredentialAllowedForPage(saved, 'http://192.168.1.10:9000/'), false);

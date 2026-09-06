@@ -1,6 +1,8 @@
 // Entry add/edit form logic
 const EntryForm = {
   editingId: null,
+  editExpiresAt: 0,
+  expiryTimer: null,
 
   init() {
     this.screen = document.getElementById('form-screen');
@@ -28,6 +30,8 @@ const EntryForm = {
   },
 
   showAdd() {
+    window.VaultSections.renderGeneration += 1;
+    clearTimeout(this.expiryTimer);
     this.editingId = null;
     this.titleEl.textContent = 'Add Entry';
     this.urlInput.value = '';
@@ -46,8 +50,17 @@ const EntryForm = {
     PasswordGenerator.updateStrength('');
   },
 
-  showEdit(entry) {
+  showEdit(entry, expiresAt) {
+    if (!expiresAt || expiresAt <= Date.now()) return;
     this.editingId = entry.id;
+    this.editExpiresAt = expiresAt;
+    clearTimeout(this.expiryTimer);
+    this.expiryTimer = setTimeout(() => {
+      this.clearSensitiveFields();
+      this.screen.classList.add('hidden');
+      void EntryList.show({ preserveSearch: true });
+      showToast('Login expired. Reload it before editing.', 'error');
+    }, expiresAt - Date.now());
     this.titleEl.textContent = 'Edit Entry';
     this.urlInput.value = entry.website_url;
     this.usernameInput.value = entry.username;
@@ -77,6 +90,8 @@ const EntryForm = {
   },
 
   clearSensitiveFields() {
+    clearTimeout(this.expiryTimer);
+    this.editExpiresAt = 0;
     this.editingId = null;
     this.urlInput.value = '';
     this.usernameInput.value = '';
@@ -87,6 +102,10 @@ const EntryForm = {
   },
 
   togglePassword() {
+    if (this.editingId && this.editExpiresAt <= Date.now()) {
+      this.cancel();
+      return;
+    }
     this.passwordInput.type = this.passwordInput.type === 'password' ? 'text' : 'password';
     this.togglePwBtn.innerHTML = window.getPopupIcon
       ? window.getPopupIcon(this.passwordInput.type === 'password' ? 'eye' : 'eyeOff', 'icon-sm')
@@ -113,6 +132,10 @@ const EntryForm = {
 
   async handleSave() {
     if (this.saveBtn.disabled || !this.form.reportValidity()) return;
+    if (this.editingId && this.editExpiresAt && this.editExpiresAt <= Date.now()) {
+      this.cancel();
+      return;
+    }
     const url = this.urlInput.value.trim();
     const username = this.usernameInput.value.trim();
     const password = this.passwordInput.value;

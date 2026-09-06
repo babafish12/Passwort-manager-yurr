@@ -176,7 +176,9 @@ export class VaultAPI {
       if (requiresAuth && (response.status === 401 || response.status === 403)) {
         throw this.createError(message, 'AUTH_ERROR');
       }
-      throw this.createError(message, 'HTTP_ERROR');
+      const error = this.createError(message, 'HTTP_ERROR');
+      error.status = response.status;
+      throw error;
     }
 
     return data;

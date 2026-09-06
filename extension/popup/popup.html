@@ -45,6 +45,8 @@
       </div>
     </div>
 
+    <div id="cache-connection" class="cache-connection hidden" role="status" aria-live="polite">Server unavailable. Temporarily using cached logins.</div>
+
     <div id="boot-screen" class="screen boot-screen" data-screen="boot" role="status" aria-live="polite" aria-label="Loading Yurrr">
       <div class="boot-card">
         <div class="boot-mark" aria-hidden="true">
@@ -157,6 +159,8 @@
         </div>
       </div>
       <div class="detail-body">
+        <p id="detail-status" class="hint" role="status" aria-live="polite"></p>
+        <button id="detail-retry" class="btn btn-secondary hidden" type="button">Reload login</button>
         <div class="detail-field">
           <label>Website</label>
           <div class="detail-value">

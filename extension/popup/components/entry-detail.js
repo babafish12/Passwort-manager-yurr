@@ -9,6 +9,10 @@ const EntryDetail = {
   currentEntry: null,
   passwordVisible: false,
   resumeTimer: null,
+  entryId: null,
+  expiresAt: 0,
+  expiryTimer: null,
+  revision: 0,
 
   init() {
     this.screen = document.getElementById('detail-screen');
@@ -21,18 +25,20 @@ const EntryDetail = {
     this.notesField = document.getElementById('detail-notes-field');
     this.togglePwBtn = document.getElementById('toggle-password');
     this.copyAllBtn = document.getElementById('copy-entry-all-btn');
+    this.statusEl = document.getElementById('detail-status');
+    this.retryBtn = document.getElementById('detail-retry');
+    this.retryBtn.addEventListener('click', () => this.show(this.entryId));
 
     document.getElementById('back-from-detail').addEventListener('click', () => {
       this.hide();
-      EntryList.show();
+      EntryList.show({ preserveSearch: true });
     });
 
     this.togglePwBtn.addEventListener('click', () => this.togglePassword());
 
-    document.getElementById('edit-entry-btn').addEventListener('click', () => {
-      if (this.currentEntry) {
-        EntryForm.showEdit(this.currentEntry);
-      }
+    document.getElementById('edit-entry-btn').addEventListener('click', async () => {
+      const entry = await this.getActionEntry();
+      if (entry) EntryForm.showEdit(entry, this.expiresAt);
     });
 
     document.getElementById('delete-entry-btn').addEventListener('click', () => this.handleDelete());
@@ -40,17 +46,19 @@ const EntryDetail = {
 
     // Copy buttons
     this.screen.querySelectorAll('.copy-btn[data-copy]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
+      btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         const targetId = btn.dataset.copy;
         const el = document.getElementById(targetId);
-        if (targetId === 'detail-url' && this.currentEntry) {
-          window.open(this.normalizeOpenUrl(this.currentEntry.website_url), '_blank', 'noopener,noreferrer');
+        if (targetId === 'detail-url') {
+          window.open(this.normalizeOpenUrl(this.urlEl.textContent), '_blank', 'noopener,noreferrer');
           return;
         }
         let text;
         if (targetId === 'detail-password') {
-          text = this.currentEntry?.password || '';
+          const entry = await this.getActionEntry();
+          if (!entry) return;
+          text = entry.password;
         } else {
           text = el.textContent;
         }
@@ -69,54 +77,125 @@ const EntryDetail = {
 
   async show(entryId) {
     const generation = ++window.VaultSections.renderGeneration;
-    this.passwordVisible = false;
+    this.entryId = entryId;
     this.stopResumeTimer();
+    this.invalidate('Loading login...', false);
+    const revision = this.revision;
+    const metadata = EntryList.entries.find((entry) => entry.id === entryId);
+    this.domainEl.textContent = metadata ? YurrrSiteScope.label(metadata) : 'Login';
+    this.urlEl.textContent = metadata?.website_url || '';
+    this.usernameEl.textContent = metadata?.username || '';
+    this.faviconEl.replaceChildren();
+    EntryList.hide();
+    this.screen.classList.remove('hidden');
+    window.animatePopupScreen?.(this.screen, 'forward');
+    document.getElementById('back-from-detail').focus();
 
     try {
-      const entry = await sendMessage('GET_ENTRY', { id: entryId });
-      if (generation !== window.VaultSections.renderGeneration) return false;
-      this.currentEntry = entry;
-
-      this.domainEl.textContent = YurrrSiteScope.label(entry);
-      this.faviconEl.innerHTML = '';
-      this.loadDetailFavicon(entry);
-      this.urlEl.textContent = entry.website_url;
-      this.usernameEl.textContent = entry.username;
-      this.passwordEl.textContent = '\u2022'.repeat(12);
-      this.passwordEl.classList.add('password-masked');
-      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
-      this.togglePwBtn.title = 'Show password';
-      this.togglePwBtn.setAttribute('aria-label', 'Show password');
-
-      if (entry.notes) {
-        this.notesEl.textContent = entry.notes;
-        this.notesField.classList.remove('hidden');
-      } else {
-        this.notesField.classList.add('hidden');
-      }
-
-      EntryList.hide();
-      this.screen.classList.remove('hidden');
-      window.animatePopupScreen?.(this.screen, 'forward');
+      const snapshot = await sendMessage('POPUP_ENTRY', { id: entryId });
+      if (generation !== window.VaultSections.renderGeneration || revision !== this.revision) return false;
+      this.applySnapshot(snapshot);
+      this.loadDetailFavicon(snapshot.data);
       this.startResumeTimer();
-      document.getElementById('back-from-detail').focus();
       return true;
     } catch (err) {
-      if (isSessionLostError(err)) return false;
-      showToast('Error: ' + err.message, 'error');
-      return false;
+      if (isSessionLostError(err) || generation !== window.VaultSections.renderGeneration) return false;
+      this.invalidate(err.message || 'Could not load login.');
+      window.updateCacheConnection?.(err.code === 'NETWORK_ERROR');
+      return true;
     }
   },
 
-  hide({ clearResume = true } = {}) {
-    this.screen.classList.add('hidden');
+  setSecretControls(enabled) {
+    this.togglePwBtn.disabled = !enabled;
+    this.copyAllBtn.disabled = !enabled;
+    document.getElementById('edit-entry-btn').disabled = !enabled;
+    this.screen.querySelectorAll('[data-copy="detail-password"]').forEach((button) => { button.disabled = !enabled; });
+  },
+
+  maskPassword() {
     this.passwordVisible = false;
     this.passwordEl.textContent = '\u2022'.repeat(12);
     this.passwordEl.classList.add('password-masked');
     this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
     this.togglePwBtn.title = 'Show password';
     this.togglePwBtn.setAttribute('aria-label', 'Show password');
+  },
+
+  invalidate(message = 'Reload this login to use its password and notes.', retry = true) {
+    this.revision += 1;
+    this.stopResumeTimer();
+    clearTimeout(this.expiryTimer);
     this.currentEntry = null;
+    this.expiresAt = 0;
+    this.maskPassword();
+    this.notesEl.textContent = '';
+    this.notesField.classList.add('hidden');
+    this.setSecretControls(false);
+    this.statusEl.textContent = message;
+    this.retryBtn.classList.toggle('hidden', !retry);
+  },
+
+  applySnapshot(snapshot) {
+    if (!snapshot || snapshot.expiresAt <= Date.now()) {
+      this.invalidate();
+      return;
+    }
+    const entry = snapshot.data;
+    this.currentEntry = entry;
+    this.expiresAt = snapshot.expiresAt;
+    this.domainEl.textContent = YurrrSiteScope.label(entry);
+    this.urlEl.textContent = entry.website_url;
+    this.usernameEl.textContent = entry.username;
+    this.notesEl.textContent = entry.notes || '';
+    this.notesField.classList.toggle('hidden', !entry.notes);
+    this.maskPassword();
+    this.setSecretControls(true);
+    this.statusEl.textContent = '';
+    this.retryBtn.classList.add('hidden');
+    clearTimeout(this.expiryTimer);
+    this.expiryTimer = setTimeout(() => this.invalidate(), Math.max(0, this.expiresAt - Date.now()));
+    window.updateCacheConnection?.(snapshot.offline);
+  },
+
+  async refresh() {
+    const entryId = this.entryId;
+    const revision = this.revision;
+    const generation = window.VaultSections.renderGeneration;
+    if (!entryId || this.screen.classList.contains('hidden')) return;
+    try {
+      const snapshot = await sendMessage('POPUP_ENTRY', { id: entryId, activity: false, refresh: false, cacheOnly: true });
+      if (generation !== window.VaultSections.renderGeneration || entryId !== this.entryId || revision !== this.revision) return;
+      this.applySnapshot(snapshot);
+    } catch (err) {
+      if (!isSessionLostError(err) && generation === window.VaultSections.renderGeneration) this.invalidate();
+    }
+  },
+
+  async getActionEntry() {
+    if (!this.currentEntry || this.expiresAt <= Date.now()) {
+      this.invalidate();
+      return null;
+    }
+    const entryId = this.entryId;
+    const revision = this.revision;
+    const generation = window.VaultSections.renderGeneration;
+    try {
+      const snapshot = await sendMessage('POPUP_ENTRY', { id: entryId });
+      if (generation !== window.VaultSections.renderGeneration || entryId !== this.entryId || revision !== this.revision || this.screen.classList.contains('hidden')) return null;
+      this.applySnapshot(snapshot);
+      return this.currentEntry;
+    } catch (err) {
+      if (!isSessionLostError(err) && generation === window.VaultSections.renderGeneration) this.invalidate(err.message);
+      return null;
+    }
+  },
+
+  hide({ clearResume = true } = {}) {
+    window.VaultSections.renderGeneration += 1;
+    this.entryId = null;
+    this.invalidate();
+    this.screen.classList.add('hidden');
     this.domainEl.textContent = '';
     this.urlEl.textContent = '';
     this.usernameEl.textContent = '';
@@ -129,25 +208,22 @@ const EntryDetail = {
     }
   },
 
-  togglePassword() {
-    this.passwordVisible = !this.passwordVisible;
+  async togglePassword() {
     if (this.passwordVisible) {
-      this.passwordEl.textContent = this.currentEntry.password;
-      this.passwordEl.classList.remove('password-masked');
-      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eyeOff', 'icon-sm') : '';
-      this.togglePwBtn.title = 'Hide password';
-      this.togglePwBtn.setAttribute('aria-label', 'Hide password');
-    } else {
-      this.passwordEl.textContent = '\u2022'.repeat(12);
-      this.passwordEl.classList.add('password-masked');
-      this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
-      this.togglePwBtn.title = 'Show password';
-      this.togglePwBtn.setAttribute('aria-label', 'Show password');
+      this.maskPassword();
+      return;
     }
+    if (!(await this.getActionEntry())) return;
+    this.passwordVisible = true;
+    this.passwordEl.textContent = this.currentEntry.password;
+    this.passwordEl.classList.remove('password-masked');
+    this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eyeOff', 'icon-sm') : '';
+    this.togglePwBtn.title = 'Hide password';
+    this.togglePwBtn.setAttribute('aria-label', 'Hide password');
   },
 
   async copyAllDetails() {
-    if (!this.currentEntry) return;
+    if (!(await this.getActionEntry())) return;
 
     const text = [
       `Website: ${this.currentEntry.website_url || ''}`,
@@ -226,9 +302,11 @@ const EntryDetail = {
   },
 
   async tryRestore() {
+    const generation = window.VaultSections.renderGeneration;
     try {
       const store = this.getResumeStore();
       const result = await store.get(DETAIL_RESUME_STATE_KEY);
+      if (generation !== window.VaultSections.renderGeneration) return true;
       const state = result[DETAIL_RESUME_STATE_KEY];
       const entryId = state?.entryId;
       const expiresAt = Number(state?.expiresAt);
@@ -245,6 +323,7 @@ const EntryDetail = {
 
       const restored = await this.show(entryId);
       if (restored) return true;
+      if (window.VaultSections.renderGeneration !== generation + 1) return true;
 
       if (!document.getElementById('login-screen')?.classList.contains('hidden')) {
         return true;
@@ -347,9 +426,10 @@ const EntryDetail = {
   },
 
   async handleDelete() {
-    if (!this.currentEntry) return;
+    if (!this.entryId) return;
+    const entryId = this.entryId;
 
-    const domainLabel = this.currentEntry.website_domain || 'this entry';
+    const domainLabel = this.currentEntry?.website_domain || 'this entry';
     const shouldDelete = await window.showConfirmDialog({
       title: 'Delete Password',
       message: `Delete "${window.truncateText ? window.truncateText(domainLabel) : domainLabel}"? This cannot be undone.`,
@@ -361,7 +441,7 @@ const EntryDetail = {
     if (!shouldDelete) return;
 
     try {
-      await sendMessage('DELETE_ENTRY', { id: this.currentEntry.id });
+      await sendMessage('DELETE_ENTRY', { id: entryId });
       showToast(`Deleted ${window.truncateText ? window.truncateText(domainLabel) : domainLabel}`);
       this.hide();
       EntryList.show();

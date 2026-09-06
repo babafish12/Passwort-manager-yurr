@@ -8,12 +8,21 @@ import {
   STORAGE_KEY_PENDING_CREDENTIALS,
   STORAGE_KEY_PENDING_USERNAMES,
   STORAGE_KEY_SERVER_URL,
+  STORAGE_KEY_TOKEN,
+  POPUP_CACHE_ALARM,
 } from '../lib/constants.js';
 
 const api = new VaultAPI();
 const session = new SessionManager(api);
+session.popupCache.onChange = (change) => {
+  chrome.runtime.sendMessage({ type: 'POPUP_CACHE_CHANGED', ...change }).catch(() => {});
+};
 const faviconCache = new Map();
 let pendingCredentials = null;
+session.onLock = () => {
+  faviconCache.clear();
+  return clearAllPendingState().catch(() => {});
+};
 const PENDING_CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
 const LAST_SELECTED_CREDENTIALS_MAX_RECORDS = 100;
@@ -26,6 +35,9 @@ const CONTENT_SCRIPT_FILES = [
 ];
 const CONTENT_STYLE_FILES = ['content/overlay.css'];
 const AUTH_REQUIRED_TYPES = new Set([
+  'POPUP_BOOTSTRAP',
+  'POPUP_LIST',
+  'POPUP_ENTRY',
   'LIST_ENTRIES',
   'GET_ENTRY',
   'CREATE_ENTRY',
@@ -72,6 +84,7 @@ async function initializeServiceWorker() {
     await restrictLocalStorageAccess();
     const token = await session.loadToken();
     if (!token) {
+      await session.clearCache();
       await clearAllPendingState();
     }
   } finally {
@@ -93,6 +106,12 @@ async function restrictLocalStorageAccess() {
 }
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  const tokenChange = changes[STORAGE_KEY_TOKEN];
+  if ((areaName === 'local' || areaName === 'session') && tokenChange?.oldValue &&
+      tokenChange.oldValue !== tokenChange.newValue) {
+    if (api.token === tokenChange.oldValue) api.clearToken();
+    void session.clearCache();
+  }
   if (areaName !== 'local' || !changes[STORAGE_KEY_SERVER_URL]) {
     return;
   }
@@ -112,6 +131,10 @@ async function handleServerUrlChange() {
 
 // Auto-lock alarm handler
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === POPUP_CACHE_ALARM) {
+    await startupReady;
+    await session.popupCache.expire();
+  }
   if (alarm.name === 'auto-lock') {
     await session.lock();
     faviconCache.clear();
@@ -919,6 +942,33 @@ async function handleMessage(message, sender) {
       }
     }
 
+    case 'POPUP_BOOTSTRAP': {
+      if (!(await session.isUnlocked())) {
+        await session.clearCache();
+        return { unlocked: false };
+      }
+      let snapshot = await session.popupCache.read('list', { cacheOnly: true });
+      if (!snapshot) {
+        const { yurrr_detail_resume_state: resume } = await chrome.storage.session.get('yurrr_detail_resume_state');
+        if (resume?.entryId && resume.expiresAt > Date.now()) {
+          const detail = await session.popupCache.read(`entry:${resume.entryId}`, { cacheOnly: true });
+          if (detail) {
+            void session.popupCache.read('list', { activity: false }).catch(() => {});
+            return { unlocked: true, snapshot: null };
+          }
+        }
+        snapshot = await session.popupCache.read('list');
+      }
+      return { unlocked: true, snapshot };
+    }
+
+    case 'POPUP_LIST':
+      return await session.popupCache.read('list', payload);
+
+    case 'POPUP_ENTRY':
+      if (!payload.id) throw new Error('Missing entry id');
+      return await session.popupCache.read(`entry:${payload.id}`, payload);
+
     case 'REFRESH_ACTIVE_TAB':
       return await refreshActiveTabContentScripts();
 
@@ -934,20 +984,17 @@ async function handleMessage(message, sender) {
 
     case 'CREATE_ENTRY': {
       await session.resetAutoLock();
-      await session.clearCache();
-      return await api.createEntry(payload);
+      return await session.mutateEntries(() => api.createEntry(payload));
     }
 
     case 'UPDATE_ENTRY': {
       await session.resetAutoLock();
-      await session.clearCache();
-      return await api.updateEntry(payload.id, payload.data);
+      return await session.mutateEntries(() => api.updateEntry(payload.id, payload.data));
     }
 
     case 'DELETE_ENTRY': {
       await session.resetAutoLock();
-      await session.clearCache();
-      return await api.deleteEntry(payload.id);
+      return await session.mutateEntries(() => api.deleteEntry(payload.id));
     }
 
     case 'LIST_VAULT_ITEMS': {
@@ -1268,8 +1315,7 @@ async function handleMessage(message, sender) {
           return { saved: true, unchanged: true };
         }
 
-        await api.updateEntry(match.id, { password });
-        await session.clearCache();
+        await session.mutateEntries(() => api.updateEntry(match.id, { password }));
         await clearPendingUsername(domain);
         await clearPendingCredentials();
         return { saved: true, updated: true };
@@ -1296,15 +1342,13 @@ async function handleMessage(message, sender) {
             };
           }
 
-          await api.updateEntry(decision.entryId, { password });
-          await session.clearCache();
+          await session.mutateEntries(() => api.updateEntry(decision.entryId, { password }));
           await clearPendingUsername(domain);
           await clearPendingCredentials();
           return { saved: true, updated: true };
         }
 
-        await api.createEntry({ website_url: url, username: effectiveUsername, password });
-        await session.clearCache();
+        await session.mutateEntries(() => api.createEntry({ website_url: url, username: effectiveUsername, password }));
         await clearPendingUsername(domain);
         await clearPendingCredentials();
         return { saved: true, updated: false };
@@ -1356,8 +1400,7 @@ async function handleMessage(message, sender) {
 
     case 'BULK_IMPORT': {
       await session.resetAutoLock();
-      await session.clearCache();
-      return await api.bulkImport(payload.entries, payload.skipDuplicates);
+      return await session.mutateEntries(() => api.bulkImport(payload.entries, payload.skipDuplicates));
     }
 
     case 'CHANGE_PASSWORD': {

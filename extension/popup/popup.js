@@ -523,7 +523,6 @@ let toastDismissTimer = null;
 let toastRemoveTimer = null;
 let sessionLossInProgress = false;
 let resumeUnlockedSessionInProgress = false;
-let sessionInvalidToastShown = false;
 let startupComplete = false;
 let vaultViewGeneration = 0;
 
@@ -538,8 +537,9 @@ function clearVaultView() {
   window.dispatchEvent(new Event('yurrr-vault-locked'));
   EntryDetail.hide();
   EntryForm.clearSensitiveFields();
-  EntryList.entries = [];
+  EntryList.invalidate();
   EntryList.listEl.replaceChildren();
+  updateCacheConnection(false);
   document.getElementById('lock-btn').classList.add('hidden');
   hideAllScreens();
 }
@@ -554,15 +554,24 @@ async function handleSessionLoss(err) {
   sessionLossInProgress = false;
 }
 
-async function showUnlockedVault() {
+function updateCacheConnection(offline) {
+  document.getElementById('cache-connection')?.classList.toggle('hidden', !offline);
+}
+
+window.updateCacheConnection = updateCacheConnection;
+
+async function showUnlockedVault(snapshot) {
+  const generation = vaultViewGeneration;
   LoginScreen.hide();
   hideAllScreens();
   document.getElementById('lock-btn').classList.remove('hidden');
+  if (snapshot) EntryList.applySnapshot(snapshot);
   void refreshActiveCredentialTab();
   if (await EntryDetail.tryRestore?.()) {
     return;
   }
-  await VaultSections.setActiveTab(VaultSections.activeTab || 'passwords');
+  if (generation !== vaultViewGeneration) return;
+  await VaultSections.setActiveTab(VaultSections.activeTab || 'passwords', { passwordSnapshot: snapshot });
 }
 
 async function tryResumeUnlockedSession({ showToast: shouldShowToast = true, allowHidden = false } = {}) {
@@ -572,18 +581,13 @@ async function tryResumeUnlockedSession({ showToast: shouldShowToast = true, all
 
   resumeUnlockedSessionInProgress = true;
   try {
-    const result = await sendMessage('IS_UNLOCKED');
-    if (result.unlocked && result.reachable !== false) {
-      await showUnlockedVault();
+    const result = await sendMessage('POPUP_BOOTSTRAP');
+    if (result.unlocked) {
+      await showUnlockedVault(result.snapshot);
       if (shouldShowToast && startupComplete) {
         showToast('Reconnected to server');
       }
       return true;
-    }
-
-    if (!result.unlocked && result.reason === 'session_invalid' && !sessionInvalidToastShown) {
-      sessionInvalidToastShown = true;
-      showToast('Session expired. Please log in again.', 'error');
     }
   } catch {
     // LoginScreen status polling keeps showing connection state.
@@ -877,7 +881,7 @@ const VaultSections = {
       this.searchInput.placeholder = 'Search passwords...';
       this.addBtn.title = 'Add password';
       this.addBtn.setAttribute('aria-label', 'Add password');
-      await EntryList.show({ initialEntries: options.passwordEntries || null, focusSearch: options.focusSearch !== false });
+      await EntryList.show({ initialSnapshot: options.passwordSnapshot || null, focusSearch: options.focusSearch !== false });
       return;
     }
 
@@ -1844,6 +1848,41 @@ EntryDetail.init();
 EntryForm.init();
 VaultSections.init();
 
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (message?.type !== 'POPUP_CACHE_CHANGED' || sender.id !== chrome.runtime.id || sender.tab) return;
+  if (document.getElementById('lock-btn').classList.contains('hidden')) return;
+  if (typeof message.offline === 'boolean') updateCacheConnection(message.offline);
+
+  if (message.kind === 'invalidated') {
+    VaultSections.renderGeneration += 1;
+    EntryList.invalidate();
+    EntryDetail.invalidate();
+    if (EntryForm.editingId) {
+      EntryForm.clearSensitiveFields();
+      EntryForm.screen.classList.add('hidden');
+      void EntryList.show({ preserveSearch: true });
+    } else if (!EntryDetail.screen.classList.contains('hidden') && EntryDetail.entryId) {
+      void EntryDetail.show(EntryDetail.entryId);
+    } else if (!EntryList.screen.classList.contains('hidden') && VaultSections.activeTab === 'passwords') {
+      void EntryList.refresh({ cacheOnly: false });
+    }
+    return;
+  }
+
+  const invalidated = [...(message.invalidated || []), ...(message.kind === 'removed' || message.kind === 'expired' ? message.keys || [] : [])];
+  if (invalidated.includes('list')) EntryList.invalidate();
+  if (invalidated.includes(`entry:${EntryDetail.entryId}`)) EntryDetail.invalidate();
+  if (invalidated.includes(`entry:${EntryForm.editingId}`)) {
+    EntryForm.clearSensitiveFields();
+    EntryForm.screen.classList.add('hidden');
+    void EntryList.show({ preserveSearch: true });
+  }
+  if (message.kind === 'updated') {
+    if (message.keys.includes('list')) void EntryList.refresh();
+    if (message.keys.includes(`entry:${EntryDetail.entryId}`)) void EntryDetail.refresh();
+  }
+});
+
 // Settings button
 document.getElementById('settings-btn').addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
@@ -1851,7 +1890,7 @@ document.getElementById('settings-btn').addEventListener('click', () => {
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if ((areaName === 'local' || areaName === 'session') &&
-      ((changes.yurrr_token?.oldValue && !changes.yurrr_token.newValue) ||
+      ((changes.yurrr_token?.oldValue && changes.yurrr_token.oldValue !== changes.yurrr_token.newValue) ||
        (areaName === 'local' && changes.yurrr_server_url))) {
     if (document.getElementById('login-screen').classList.contains('hidden')) {
       clearVaultView();
@@ -1890,29 +1929,9 @@ function hideAllScreens() {
 // Startup: check if unlocked
 (async () => {
   try {
-    const result = await sendMessage('IS_UNLOCKED');
+    const result = await sendMessage('POPUP_BOOTSTRAP');
     if (result.unlocked) {
-      if (result.reachable === false) {
-        const loginStatus = await LoginScreen.show({
-          animate: false,
-          awaitStatus: true,
-          allowResume: true,
-          allowHiddenResume: true,
-          reveal: false,
-          focus: false,
-        });
-        hideBootScreen();
-        if (loginStatus?.resumed) {
-          return;
-        }
-        LoginScreen.revealPrepared({ animate: false, focus: true });
-        if (!loginStatus?.online) {
-          showToast('Server not reachable. Will reconnect automatically when available.', 'error');
-        }
-        return;
-      }
-
-      await showUnlockedVault();
+      await showUnlockedVault(result.snapshot);
       hideBootScreen();
     } else {
       await EntryDetail.clearResumeState?.();
@@ -1925,10 +1944,6 @@ function hideAllScreens() {
       });
       hideBootScreen();
       LoginScreen.revealPrepared({ animate: false, focus: true });
-      if (result.reason === 'session_invalid') {
-        sessionInvalidToastShown = true;
-        showToast('Session expired. Please log in again.', 'error');
-      }
     }
   } catch {
     await LoginScreen.show({
