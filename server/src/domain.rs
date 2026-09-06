@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use url::Url;
 
 fn normalized_host(url: &Url) -> Option<String> {
@@ -62,9 +63,62 @@ pub fn normalize_domain_lossy(input: &str) -> String {
     })
 }
 
+pub fn is_local_host(host: &str) -> bool {
+    let host = host
+        .trim_matches(['[', ']'])
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            let octets = ip.octets();
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        }
+        Ok(IpAddr::V6(ip)) => {
+            if let Some(ipv4) = ip.to_ipv4_mapped() {
+                return is_local_host(&ipv4.to_string());
+            }
+            let first = ip.segments()[0];
+            ip.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
+/// Private hosts can run independent vault accounts on each TCP port.
+/// Derive the scope from the saved URL so existing entries need no migration.
+pub fn credential_scope(input: &str) -> Option<String> {
+    let input = input.trim();
+    let host = normalize_entry_domain(input)?;
+    if !is_local_host(&host) {
+        return Some(host);
+    }
+    let with_scheme = if input.contains("://") {
+        input.to_string()
+    } else {
+        format!("https://{input}")
+    };
+    let url = Url::parse(&with_scheme).ok()?;
+    Some(format!("{host}:{}", url.port_or_known_default()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_port_scopes_match_extension_behavior() {
+        let cases: Vec<(String, Option<String>)> =
+            serde_json::from_str(include_str!("../../tests/site-scope-cases.json")).unwrap();
+        for (url, expected) in cases {
+            assert_eq!(credential_scope(&url), expected, "{url}");
+        }
+    }
 
     #[test]
     fn normalizes_urls_and_bare_domains() {

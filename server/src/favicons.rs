@@ -520,7 +520,7 @@ fn parse_html_icon_links(
 
         if let (Some(rel), Some(href)) = (attrs.get("rel"), attrs.get("href")) {
             if is_icon_rel(rel) {
-                if let Ok(url) = base_url.join(&href) {
+                if let Ok(url) = base_url.join(href) {
                     if let Some(url) = validate_url(url, allowed_hosts) {
                         let source = if is_apple_touch_rel(rel) {
                             IconSource::AppleTouch
@@ -664,6 +664,7 @@ fn sort_and_limit_icon_candidates(candidates: Vec<IconCandidate>) -> Vec<IconCan
     candidates
 }
 
+#[cfg(test)]
 fn discover_icon_urls(base_url: &Url, html: &str, allowed_hosts: &HashSet<String>) -> Vec<Url> {
     sort_and_limit_icon_candidates(parse_html_icon_links(base_url, html, allowed_hosts).icons)
         .into_iter()

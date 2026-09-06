@@ -115,28 +115,26 @@ fn encrypt_optional_notes(notes: Option<&str>, key: &[u8; 32]) -> Result<Option<
 
 pub(crate) async fn duplicate_entry_exists(
     conn: &mut SqliteConnection,
-    website_domain: &str,
+    website_url: &str,
     username: &str,
     excluded_id: Option<&str>,
 ) -> Result<bool, sqlx::Error> {
-    let count: i64 = if let Some(excluded_id) = excluded_id {
-        sqlx::query_scalar(
-            "SELECT COUNT(*) FROM entries WHERE website_domain = ? AND username = ? AND id <> ?",
-        )
-        .bind(website_domain)
-        .bind(username)
-        .bind(excluded_id)
-        .fetch_one(&mut *conn)
-        .await?
-    } else {
-        sqlx::query_scalar("SELECT COUNT(*) FROM entries WHERE website_domain = ? AND username = ?")
-            .bind(website_domain)
-            .bind(username)
-            .fetch_one(&mut *conn)
-            .await?
-    };
+    let website_domain = extract_domain(website_url);
+    let scope = domain::credential_scope(website_url);
+    let candidates: Vec<(String,)> = sqlx::query_as(
+        "SELECT website_url FROM entries WHERE website_domain = ? AND username = ? AND (? IS NULL OR id <> ?)",
+    )
+    .bind(&website_domain)
+    .bind(username)
+    .bind(excluded_id)
+    .bind(excluded_id)
+    .fetch_all(&mut *conn)
+    .await?;
 
-    Ok(count > 0)
+    Ok(scope.is_some()
+        && candidates
+            .iter()
+            .any(|(url,)| domain::credential_scope(url) == scope))
 }
 
 async fn insert_entry_row(
@@ -146,7 +144,7 @@ async fn insert_entry_row(
     password_encrypted: &str,
     notes_encrypted: &Option<String>,
 ) -> Result<(), AppError> {
-    if duplicate_entry_exists(conn, &entry.website_domain, &entry.username, None).await? {
+    if duplicate_entry_exists(conn, &entry.website_url, &entry.username, None).await? {
         return Err(AppError::Conflict(
             "Entry already exists for this website and username".into(),
         ));
@@ -173,11 +171,14 @@ pub async fn list_entries(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<EntryListItem>>, AppError> {
     let query_domain = query.domain.as_deref().map(extract_domain);
+    let query_scope = query.domain.as_deref().and_then(domain::credential_scope);
     let entries: Vec<EntryRow> = if let Some(domain) = &query_domain {
         sqlx::query_as(
-            "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries WHERE website_domain = ? ORDER BY website_domain, username",
+            "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries WHERE website_domain IN (?, ?, ?) ORDER BY website_domain, username",
         )
         .bind(domain)
+        .bind(domain.strip_prefix("www.").unwrap_or(domain))
+        .bind(format!("www.{}", domain.strip_prefix("www.").unwrap_or(domain)))
         .fetch_all(&state.db)
         .await?
     } else {
@@ -198,6 +199,10 @@ pub async fn list_entries(
 
     let items: Vec<EntryListItem> = entries
         .iter()
+        .filter(|row| {
+            !query_domain.as_deref().is_some_and(domain::is_local_host)
+                || domain::credential_scope(&row.website_url) == query_scope
+        })
         .map(|row| {
             let mut item = EntryListItem::from(row);
             item.has_favicon = favicon_set.contains(&extract_domain(&row.website_domain));
@@ -278,11 +283,10 @@ pub async fn create_entry(
     let notes_encrypted = encrypt_optional_notes(entry.notes.as_deref(), &session.encryption_key)
         .map_err(|e| AppError::Internal(format!("Encrypt notes failed: {e}")))?;
 
-    let mut conn = state.db.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut conn = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
     let insert_result = insert_entry_row(
-        &mut *conn,
+        &mut conn,
         &id,
         &entry,
         &password_encrypted,
@@ -290,18 +294,8 @@ pub async fn create_entry(
     )
     .await;
 
-    match insert_result {
-        Ok(()) => {
-            if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
-                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-                return Err(err.into());
-            }
-        }
-        Err(err) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(err);
-        }
-    };
+    insert_result?;
+    conn.commit().await?;
 
     sqlx::query("INSERT INTO audit_log (event_type, details) VALUES ('CREATE_ENTRY', ?)")
         .bind(format!("Created entry for {}", entry.website_domain))
@@ -336,8 +330,7 @@ pub async fn update_entry(
     Path(id): Path<String>,
     Json(req): Json<UpdateEntryRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
-    let mut conn = state.db.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut conn = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
     let update_result: Result<(String, String), AppError> = async {
         let entry: EntryRow = sqlx::query_as(
@@ -352,8 +345,8 @@ pub async fn update_entry(
         let validated = validate_update_entry(&entry, &req)?;
 
         if duplicate_entry_exists(
-            &mut *conn,
-            &validated.website_domain,
+            &mut conn,
+            &validated.website_url,
             &validated.username,
             Some(&id),
         )
@@ -394,19 +387,8 @@ pub async fn update_entry(
     }
     .await;
 
-    let (domain, old_domain) = match update_result {
-        Ok(domains) => {
-            if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
-                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-                return Err(err.into());
-            }
-            domains
-        }
-        Err(err) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(err);
-        }
-    };
+    let (domain, old_domain) = update_result?;
+    conn.commit().await?;
 
     sqlx::query("INSERT INTO audit_log (event_type, details) VALUES ('UPDATE_ENTRY', ?)")
         .bind(format!("Updated entry {id}"))
@@ -462,8 +444,7 @@ pub async fn bulk_import(
     let mut errors = Vec::new();
 
     let mut favicon_domains = HashSet::new();
-    let mut conn = state.db.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut conn = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
     for entry_req in &req.entries {
         let id = uuid::Uuid::new_v4().to_string();
@@ -499,7 +480,7 @@ pub async fn bulk_import(
             };
 
         match insert_entry_row(
-            &mut *conn,
+            &mut conn,
             &id,
             &entry,
             &password_encrypted,
@@ -526,10 +507,7 @@ pub async fn bulk_import(
         }
     }
 
-    if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
-        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-        return Err(err.into());
-    }
+    conn.commit().await?;
 
     for domain in favicon_domains {
         let pool = state.db.clone();
@@ -658,11 +636,11 @@ mod tests {
 
         let entry = validate_create_entry(&create_request("https://example.com", "alice", "pw"))
             .expect("entry should validate");
-        insert_entry_row(&mut *conn, "one", &entry, "encrypted", &None)
+        insert_entry_row(&mut conn, "one", &entry, "encrypted", &None)
             .await
             .expect("first insert should succeed");
 
-        let duplicate = insert_entry_row(&mut *conn, "two", &entry, "encrypted", &None).await;
+        let duplicate = insert_entry_row(&mut conn, "two", &entry, "encrypted", &None).await;
         assert!(matches!(duplicate, Err(AppError::Conflict(_))));
 
         sqlx::query("ROLLBACK")
@@ -685,20 +663,20 @@ mod tests {
         let bob = validate_create_entry(&create_request("example.com", "bob", "pw"))
             .expect("entry should validate");
 
-        insert_entry_row(&mut *conn, "alice-id", &alice, "encrypted", &None)
+        insert_entry_row(&mut conn, "alice-id", &alice, "encrypted", &None)
             .await
             .expect("first insert should succeed");
-        insert_entry_row(&mut *conn, "bob-id", &bob, "encrypted", &None)
+        insert_entry_row(&mut conn, "bob-id", &bob, "encrypted", &None)
             .await
             .expect("second insert should succeed");
 
         assert!(
-            !duplicate_entry_exists(&mut *conn, "example.com", "alice", Some("alice-id"))
+            !duplicate_entry_exists(&mut conn, "example.com", "alice", Some("alice-id"))
                 .await
                 .expect("duplicate query should succeed")
         );
         assert!(
-            duplicate_entry_exists(&mut *conn, "example.com", "alice", Some("bob-id"))
+            duplicate_entry_exists(&mut conn, "example.com", "alice", Some("bob-id"))
                 .await
                 .expect("duplicate query should succeed")
         );

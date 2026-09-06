@@ -47,18 +47,15 @@ pub fn third_party_favicons_enabled() -> bool {
     *VALUE.get_or_init(|| env_bool(THIRD_PARTY_FAVICONS_ENV).unwrap_or(false))
 }
 
-fn configured_cors_origins() -> &'static [String] {
-    static VALUE: OnceLock<Vec<String>> = OnceLock::new();
+fn configured_cors_origins() -> &'static Option<Vec<String>> {
+    static VALUE: OnceLock<Option<Vec<String>>> = OnceLock::new();
     VALUE.get_or_init(|| {
-        std::env::var(CORS_ALLOWED_ORIGINS_ENV)
-            .ok()
-            .map(|raw| {
-                raw.split(',')
-                    .filter_map(normalize_cors_origin)
-                    .filter(|origin| origin != "*")
-                    .collect()
-            })
-            .unwrap_or_default()
+        std::env::var(CORS_ALLOWED_ORIGINS_ENV).ok().map(|raw| {
+            raw.split(',')
+                .filter_map(normalize_cors_origin)
+                .filter(|origin| origin != "*")
+                .collect()
+        })
     })
 }
 
@@ -69,6 +66,14 @@ fn normalize_cors_origin(raw: &str) -> Option<String> {
     }
 
     let url = url::Url::parse(trimmed).ok()?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
     let host = url.host_str()?.to_ascii_lowercase();
     let host = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
@@ -112,12 +117,15 @@ fn is_local_or_private_host(host: &str) -> bool {
 }
 
 pub fn is_cors_origin_allowed(origin: &str) -> bool {
+    cors_origin_allowed(origin, configured_cors_origins().as_deref())
+}
+
+fn cors_origin_allowed(origin: &str, configured_origins: Option<&[String]>) -> bool {
     let Some(normalized) = normalize_cors_origin(origin) else {
         return false;
     };
 
-    let configured_origins = configured_cors_origins();
-    if !configured_origins.is_empty() {
+    if let Some(configured_origins) = configured_origins {
         return configured_origins
             .iter()
             .any(|allowed| allowed == &normalized);
@@ -152,3 +160,32 @@ pub const CERTS_DIR: &str = "certs";
 
 // Password generator defaults
 pub const DEFAULT_PASSWORD_LENGTH: usize = 20;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_empty_cors_allowlist_does_not_fall_back_to_defaults() {
+        let origin = "chrome-extension://test-extension";
+        assert!(cors_origin_allowed(origin, None));
+        assert!(!cors_origin_allowed(origin, Some(&[])));
+        assert!(cors_origin_allowed(origin, Some(&[origin.to_string()])));
+        assert!(!cors_origin_allowed("https://example.com", None));
+    }
+
+    #[test]
+    fn cors_rejects_urls_that_are_not_origins() {
+        for origin in [
+            "*",
+            "null",
+            "https://user:pass@localhost",
+            "https://localhost/path",
+            "https://localhost?query",
+            "https://localhost#fragment",
+        ] {
+            assert!(!cors_origin_allowed(origin, None), "{origin}");
+        }
+        assert!(cors_origin_allowed("https://localhost:8443", None));
+    }
+}

@@ -31,6 +31,7 @@ async fn verify_master_password_for_export(
     state: &AppState,
     master_password: String,
 ) -> Result<(), AppError> {
+    crate::auth::enforce_auth_rate_limit("reauthentication")?;
     let (hash,): (String,) = sqlx::query_as("SELECT password_hash FROM master_config WHERE id = 1")
         .fetch_one(&state.db)
         .await?;
@@ -42,9 +43,7 @@ async fn verify_master_password_for_export(
     .map_err(|e| AppError::Internal(format!("Task join error: {e}")))?;
 
     if !valid {
-        return Err(AppError::Unauthorized(
-            "Master password is incorrect".into(),
-        ));
+        return Err(AppError::BadRequest("Master password is incorrect".into()));
     }
 
     Ok(())
@@ -145,8 +144,7 @@ pub async fn import_vault(
         errors: Vec::new(),
     };
 
-    let mut conn = state.db.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut conn = state.db.begin_with("BEGIN IMMEDIATE").await?;
     let mut favicon_domains = Vec::new();
 
     for password in req.passwords {
@@ -187,13 +185,8 @@ pub async fn import_vault(
             continue;
         }
 
-        match entries::duplicate_entry_exists(
-            &mut *conn,
-            &entry.website_domain,
-            &entry.username,
-            None,
-        )
-        .await
+        match entries::duplicate_entry_exists(&mut conn, &entry.website_url, &entry.username, None)
+            .await
         {
             Ok(true) => {
                 result.skipped_passwords += 1;
@@ -267,10 +260,7 @@ pub async fn import_vault(
         }
     }
 
-    if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
-        let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-        return Err(err.into());
-    }
+    conn.commit().await?;
 
     for domain in favicon_domains {
         let pool = state.db.clone();

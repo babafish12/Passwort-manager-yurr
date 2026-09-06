@@ -55,7 +55,7 @@ impl AuthRateLimiter {
     }
 }
 
-fn enforce_auth_rate_limit(bucket_name: &'static str) -> Result<(), AppError> {
+pub(crate) fn enforce_auth_rate_limit(bucket_name: &'static str) -> Result<(), AppError> {
     static LIMITER: OnceLock<Mutex<AuthRateLimiter>> = OnceLock::new();
     let limiter = LIMITER.get_or_init(|| Mutex::new(AuthRateLimiter::new()));
     let mut limiter = limiter
@@ -212,6 +212,7 @@ pub async fn change_password(
     mut session: AuthenticatedSession,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<Json<MessageResponse>, AppError> {
+    enforce_auth_rate_limit("reauthentication")?;
     if req.new_password.len() < 8 {
         return Err(AppError::BadRequest(
             "New password must be at least 8 characters".into(),
@@ -230,9 +231,7 @@ pub async fn change_password(
         .map_err(|e| AppError::Internal(format!("Task join error: {e}")))?;
 
     if !valid {
-        return Err(AppError::Unauthorized(
-            "Current password is incorrect".into(),
-        ));
+        return Err(AppError::BadRequest("Current password is incorrect".into()));
     }
 
     let new_pw = req.new_password.clone();
@@ -261,8 +260,7 @@ pub async fn change_password(
         ));
     }
 
-    let mut conn = state.db.acquire().await?;
-    sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
+    let mut conn = state.db.begin_with("BEGIN IMMEDIATE").await?;
 
     let rekey_result: Result<(), AppError> = async {
         let config: MasterConfigRow = sqlx::query_as(
@@ -278,7 +276,7 @@ pub async fn change_password(
             .map_err(|e| AppError::Internal(format!("Task join error: {e}")))?;
 
         if !valid {
-            return Err(AppError::Unauthorized("Current password is incorrect".into()));
+            return Err(AppError::BadRequest("Current password is incorrect".into()));
         }
 
         let old_key = &session.encryption_key;
@@ -354,18 +352,8 @@ pub async fn change_password(
     }
     .await;
 
-    match rekey_result {
-        Ok(()) => {
-            if let Err(err) = sqlx::query("COMMIT").execute(&mut *conn).await {
-                let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-                return Err(err.into());
-            }
-        }
-        Err(err) => {
-            let _ = sqlx::query("ROLLBACK").execute(&mut *conn).await;
-            return Err(err);
-        }
-    }
+    rekey_result?;
+    conn.commit().await?;
 
     state.sessions.clear_sessions().await;
 
