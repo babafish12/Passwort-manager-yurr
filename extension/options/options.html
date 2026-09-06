@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Yurrr Settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
@@ -10,15 +11,11 @@
     <header class="page-header">
       <h1>
         <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <path d="M12 3.5v3" />
-          <path d="M12 17.5v3" />
-          <path d="m4.8 7 2.1 2.1" />
-          <path d="m17.1 14.9 2.1 2.1" />
-          <path d="M3.5 12h3" />
-          <path d="M17.5 12h3" />
-          <path d="m4.8 17 2.1-2.1" />
-          <path d="m17.1 9.1 2.1-2.1" />
-          <circle cx="12" cy="12" r="4" />
+          <path d="M7 7.5 12 12.4 17 7.5" />
+          <path d="M12 12.4V18" />
+          <path d="M12 18h3" />
+          <path d="M14.6 18v-2.2" />
+          <circle class="logo-dot" cx="18" cy="6.7" r="2" />
         </svg>
         Yurrr Password Manager
       </h1>
@@ -331,6 +328,26 @@
       </div>
     </section>
   </div>
+
+  <dialog id="export-dialog" aria-labelledby="export-dialog-title" aria-describedby="export-dialog-description">
+    <form id="export-form">
+      <h2 id="export-dialog-title">Export decrypted vault</h2>
+      <p id="export-dialog-description">The downloaded file contains readable passwords and notes. Store it in a trusted, encrypted location.</p>
+      <div class="field">
+        <label for="export-master-password">Master password</label>
+        <input id="export-master-password" type="password" autocomplete="current-password" required autofocus>
+      </div>
+      <div class="field">
+        <label for="export-confirmation">Type EXPORT DECRYPTED VAULT to confirm</label>
+        <input id="export-confirmation" type="text" autocomplete="off" spellcheck="false" required>
+      </div>
+      <p id="export-error" role="alert"></p>
+      <div class="actions">
+        <button id="export-cancel" class="btn btn-secondary" type="button">Cancel</button>
+        <button id="export-submit" class="btn btn-primary" type="submit">Download export</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="csv-parser.js"></script>
   <script src="options.js"></script>

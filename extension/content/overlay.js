@@ -4,6 +4,7 @@ const YurrrOverlay = {
   currentTarget: null,
   currentPassword: '',
   elements: null,
+  generation: 0,
 
   create() {
     if (this.container) return;
@@ -23,29 +24,29 @@ const YurrrOverlay = {
       <style>
         * { box-sizing: border-box; }
         .overlay {
-          background: #1a1a2e;
-          border: 1px solid #2ecc71;
+          background: #172024;
+          border: 1px solid #d8b24c;
           border-radius: 8px;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-          color: #e0e0e0;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          box-shadow: 0 10px 28px rgba(23, 32, 36, 0.34);
+          color: #eef3ef;
+          font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
           overflow: hidden;
           overflow-y: auto;
         }
         .header {
           align-items: center;
-          background: #16213e;
-          border-bottom: 1px solid #0f3460;
+          background: #243039;
+          border-bottom: 1px solid rgba(216, 178, 76, 0.32);
           display: flex;
           justify-content: space-between;
           padding: 8px 12px;
         }
-        .logo { color: #2ecc71; font-size: 13px; font-weight: 700; }
-        .subtitle { color: #888; font-size: 11px; }
+        .logo { color: #d8b24c; font-size: 13px; font-weight: 760; }
+        .subtitle { color: #aab5b0; font-size: 11px; }
         .password {
-          background: #0f3460;
+          background: #243039;
           border-radius: 4px;
-          font-family: 'Courier New', monospace;
+          font-family: 'SFMono-Regular', 'Cascadia Mono', 'Roboto Mono', ui-monospace, monospace;
           font-size: 14px;
           margin: 8px;
           padding: 10px 12px;
@@ -55,13 +56,13 @@ const YurrrOverlay = {
         .controls { padding: 8px 12px 12px; }
         .slider-row {
           align-items: center;
-          color: #888;
+          color: #aab5b0;
           display: flex;
           font-size: 12px;
           gap: 8px;
           margin-bottom: 8px;
         }
-        .slider-row input[type="range"] { accent-color: #2ecc71; flex: 1; }
+        .slider-row input[type="range"] { accent-color: #68c7b8; flex: 1; }
         .actions { display: flex; gap: 6px; }
         button {
           border: none;
@@ -73,14 +74,14 @@ const YurrrOverlay = {
           padding: 6px 12px;
         }
         button:disabled { cursor: not-allowed; opacity: 0.6; }
-        .primary { background: #2ecc71; color: #1a1a2e; }
-        .primary:hover:not(:disabled) { background: #27ae60; }
+        .primary { background: #d8b24c; color: #172024; }
+        .primary:hover:not(:disabled) { background: #c59e3e; }
         .secondary {
-          background: #16213e;
-          border: 1px solid #333;
-          color: #e0e0e0;
+          background: #243039;
+          border: 1px solid rgba(216, 178, 76, 0.28);
+          color: #eef3ef;
         }
-        .secondary:hover:not(:disabled) { background: #1a2744; }
+        .secondary:hover:not(:disabled) { background: #2d3a40; }
       </style>
       <div class="overlay">
         <div class="header">
@@ -90,8 +91,8 @@ const YurrrOverlay = {
         <div class="password"></div>
         <div class="controls">
           <div class="slider-row">
-            <label>Length: <span class="length-label">20</span></label>
-            <input class="length" type="range" min="12" max="32" value="20">
+            <label for="yurrr-password-length">Length: <span class="length-label">20</span></label>
+            <input id="yurrr-password-length" class="length" type="range" min="12" max="32" value="20">
           </div>
           <div class="actions">
             <button class="secondary regenerate" type="button">Regenerate</button>
@@ -110,6 +111,13 @@ const YurrrOverlay = {
 
     slider.addEventListener('input', () => {
       label.textContent = slider.value;
+    });
+    slider.addEventListener('change', () => this.generateAndShow(Number.parseInt(slider.value, 10)));
+    shadow.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        this.hide();
+      }
     });
 
     shadow.querySelector('.regenerate').addEventListener('click', (e) => {
@@ -143,6 +151,8 @@ const YurrrOverlay = {
 
     this.create();
     this.currentTarget = targetField;
+    this.elements.slider.value = '20';
+    this.elements.label.textContent = '20';
 
     // Position below target field without letting the overlay leave the viewport.
     const rect = targetField.getBoundingClientRect();
@@ -176,6 +186,7 @@ const YurrrOverlay = {
   },
 
   hide() {
+    this.generation += 1;
     if (this.container) {
       this.container.style.display = 'none';
     }
@@ -190,6 +201,7 @@ const YurrrOverlay = {
   },
 
   async generateAndShow(length) {
+    const generation = ++this.generation;
     const pwEl = this.elements?.pwEl;
     const useBtn = this.elements?.useBtn;
     if (!pwEl || !useBtn) return;
@@ -203,11 +215,13 @@ const YurrrOverlay = {
         chrome.runtime.sendMessage(
           { type: 'GENERATE_PASSWORD', payload: { length } },
           (resp) => {
-            if (resp?.error) reject(new Error(resp.error));
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else if (resp?.error) reject(new Error(resp.error));
             else resolve(resp);
           }
         );
       });
+      if (generation !== this.generation || !this.currentTarget) return;
       if (!result?.password) {
         throw new Error('No password generated');
       }
@@ -215,6 +229,7 @@ const YurrrOverlay = {
       pwEl.textContent = result.password;
       useBtn.disabled = false;
     } catch {
+      if (generation !== this.generation || !this.currentTarget) return;
       pwEl.textContent = 'Unable to generate (vault locked?)';
     }
   },
@@ -283,6 +298,7 @@ const YurrrOverlay = {
   },
 
   destroy() {
+    this.hide();
     if (this.container) {
       this.container.remove();
       this.container = null;

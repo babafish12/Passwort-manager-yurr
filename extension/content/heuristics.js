@@ -4,6 +4,7 @@ const YurrrHeuristics = {
   negativeKeywordPattern: /(search|query|suche|suchen|durchsuchen|coupon|promo|captcha|otp|2fa|token|code|postal|zip|city|country|address)/i,
   searchKeywordPattern: /\b(search|query|lookup|find|suche|suchen|durchsuchen)\b/i,
   inputSelector: 'input[type="text"], input[type="email"], input[type="tel"], input:not([type])',
+  addressFieldSelector: 'input[type="text"], input[type="tel"], input:not([type]), textarea, select',
 
   // Find standalone username/email fields when no password field is present
   findStandaloneUsernameFields() {
@@ -178,6 +179,87 @@ const YurrrHeuristics = {
     const type = (el.type || '').toLowerCase();
     if (type === 'hidden' || type === 'password') return false;
     return true;
+  },
+
+  isEligibleAddressField(el) {
+    if (!el) return false;
+    if (this.isHidden(el)) return false;
+    if (el.disabled || el.readOnly) return false;
+
+    const tagName = String(el.tagName || '').toLowerCase();
+    if (tagName === 'textarea' || tagName === 'select') return true;
+
+    if (tagName !== 'input') return false;
+    const type = (el.type || '').toLowerCase();
+    return !['hidden', 'password', 'checkbox', 'radio', 'submit', 'button', 'reset', 'file', 'image', 'search'].includes(type);
+  },
+
+  getAutocompleteTokens(el) {
+    return String(el?.getAttribute('autocomplete') || '')
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+  },
+
+  getAddressFieldKind(el) {
+    if (!this.isEligibleAddressField(el) || this.isSearchField(el)) return '';
+
+    const tokens = this.getAutocompleteTokens(el);
+    if (tokens.some((token) => ['email', 'username', 'current-password', 'new-password', 'one-time-code', 'tel'].includes(token))) return '';
+    if (this.isLikelyEmailField(el)) return '';
+    if (tokens.includes('given-name')) return 'given_name';
+    if (tokens.includes('family-name')) return 'family_name';
+    if (tokens.includes('name')) return 'full_name';
+    if (tokens.includes('street-address')) return 'street_address';
+    if (tokens.includes('address-line1')) return 'line1';
+    if (tokens.includes('address-line2')) return 'line2';
+    if (tokens.includes('address-level2')) return 'city';
+    if (tokens.includes('postal-code')) return 'postal_code';
+    if (tokens.includes('country') || tokens.includes('country-name')) return 'country';
+
+    const meta = this.getFieldMeta(el);
+    if (/(address|adresse|addr)[\s_-]*(2|two|second)|(^|[\s_-])(apt|apartment|suite|unit|wohnung|zusatz)\b|line[\s_-]*2/i.test(meta)) {
+      return 'line2';
+    }
+    if (/(postal|post[\s_-]*code|postcode|zip|plz)/i.test(meta)) {
+      return 'postal_code';
+    }
+    if (/(city|town|locality|stadt|ort)\b/i.test(meta)) {
+      return 'city';
+    }
+    if (/(country|land)\b/i.test(meta)) {
+      return 'country';
+    }
+    if (/(^|[\s_-])(first|given|vorname)([\s_-]|$)/i.test(meta)) {
+      return 'given_name';
+    }
+    if (/(^|[\s_-])(last|family|surname|nachname)([\s_-]|$)/i.test(meta)) {
+      return 'family_name';
+    }
+    if (/(^|[\s_-])(full[\s_-]*name|vollst[aä]ndiger[\s_-]*name|name)([\s_-]|$)/i.test(meta)) {
+      return 'full_name';
+    }
+    if (/(street|strasse|straße|address|adresse|addr|line[\s_-]*1)/i.test(meta)) {
+      return 'line1';
+    }
+
+    return '';
+  },
+
+  isStrongAddressKind(kind) {
+    return ['street_address', 'line1', 'line2', 'city', 'postal_code', 'country'].includes(kind);
+  },
+
+  findAddressFields(scope = document) {
+    const fields = Array.from(scope.querySelectorAll(this.addressFieldSelector))
+      .filter((field) => this.getAddressFieldKind(field));
+    const hasStrongAddressField = fields.some((field) => this.isStrongAddressKind(this.getAddressFieldKind(field)));
+
+    if (!hasStrongAddressField) {
+      return [];
+    }
+
+    return fields;
   },
 
   getVisiblePasswordFields(form) {

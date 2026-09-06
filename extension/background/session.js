@@ -145,6 +145,10 @@ export class SessionManager {
       await this.clearAutoLockState();
     }
 
+    if (this._clearingToken || generation !== this._tokenGeneration) {
+      return null;
+    }
+
     if (token) {
       this.api.setToken(token, tokenServerUrl);
     }
@@ -252,12 +256,18 @@ export class SessionManager {
   }
 
   async lock() {
+    // Keep a separate client for revocation so a slow server cannot delay the
+    // local lock or clear a newer login when the logout request completes.
+    const logoutApi = new this.api.constructor();
+    logoutApi.serverUrl = this.api.tokenServerUrl || this.api.serverUrl;
+    logoutApi.setToken(this.api.token, this.api.tokenServerUrl);
+    await this.clearToken();
+    if (!logoutApi.token || !logoutApi.serverUrl) return;
     try {
-      await this.api.logout();
+      await logoutApi.logout();
     } catch {
       // Server might be unreachable, clear local state anyway
     }
-    await this.clearToken();
   }
 
   async forceLocalLock() {
@@ -287,7 +297,7 @@ export class SessionManager {
         const newMode = this._normalizeMode(changes[STORAGE_KEY_SESSION_MODE].newValue);
         this._cachedMode = newMode;
         // Clear token on mode change — user must re-login
-        await this.clearToken();
+        await this.lock();
         return;
       }
 

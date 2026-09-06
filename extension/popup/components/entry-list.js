@@ -17,7 +17,8 @@ const EntryList = {
     });
   },
 
-  async show({ animate = true, initialEntries = null } = {}) {
+  async show({ animate = true, initialEntries = null, focusSearch = true } = {}) {
+    const generation = ++window.VaultSections.renderGeneration;
     this.screen.classList.remove('hidden');
     if (animate) {
       window.animatePopupScreen?.(this.screen, 'back');
@@ -26,15 +27,17 @@ const EntryList = {
     this.renderLoadingState('Loading passwords...');
 
     try {
-      this.entries = Array.isArray(initialEntries) ? initialEntries : await sendMessage('LIST_ENTRIES');
-      this.renderEntries(this.entries);
-      this.focusSearchInput();
+      const entries = Array.isArray(initialEntries) ? initialEntries : await sendMessage('LIST_ENTRIES');
+      if (generation !== window.VaultSections.renderGeneration) return;
+      this.entries = entries;
+      this.filterEntries();
+      if (focusSearch) this.focusSearchInput();
     } catch (err) {
-      if (isSessionLostError(err)) {
+      if (isSessionLostError(err) || generation !== window.VaultSections.renderGeneration) {
         return;
       }
-      this.renderEmptyState(`Failed to load: ${err.message || 'Unknown error'}`);
-      this.focusSearchInput();
+      this.renderEmptyState(`Could not load passwords. ${err.message || 'Check the server connection.'}`, 'Try again', () => this.show());
+      if (focusSearch) this.focusSearchInput();
     }
   },
 
@@ -47,14 +50,14 @@ const EntryList = {
       return;
     }
 
-    const query = this.searchInput.value.toLowerCase();
+    const query = this.searchInput.value.trim().toLowerCase();
     if (!query) {
       this.renderEntries(this.entries);
       return;
     }
     const filtered = this.entries.filter(
       (e) =>
-        (e.website_domain || '').toLowerCase().includes(query) ||
+        YurrrSiteScope.label(e).toLowerCase().includes(query) ||
         (e.username || '').toLowerCase().includes(query)
     );
     this.renderEntries(filtered);
@@ -62,13 +65,13 @@ const EntryList = {
 
   renderEntries(entries) {
     if (!entries.length) {
-      this.renderEmptyState('No passwords saved yet');
+      this.renderSearchEmptyState('passwords', this.searchInput.value.trim());
       return;
     }
 
     this.listEl.innerHTML = entries
       .map((e) => {
-        const domain = e.website_domain || '';
+        const domain = YurrrSiteScope.label(e);
         const initial = domain ? domain.charAt(0).toUpperCase() : '?';
         const entryId = escapeHtml(e.id);
         const websiteUrl = escapeHtml(e.website_url || '');
@@ -81,7 +84,7 @@ const EntryList = {
         return `
       <div class="entry-item">
         <button class="entry-main" data-id="${entryId}" type="button" aria-label="${label}">
-          <div class="entry-icon" data-favicon-domain="${escapeHtml(domain)}" data-favicon-url="${websiteUrl}" data-has-favicon="${hasFavicon}">${escapeHtml(initial)}</div>
+          <div class="entry-icon" data-favicon-domain="${escapeHtml(e.website_domain || '')}" data-favicon-url="${websiteUrl}" data-has-favicon="${hasFavicon}">${escapeHtml(initial)}</div>
           <div class="entry-info">
             <div class="entry-domain">${escapeHtml(domain)}</div>
             <div class="entry-username">${username}</div>
@@ -113,11 +116,31 @@ const EntryList = {
     this.loadFavicons();
   },
 
-  renderEmptyState(message) {
+  renderEmptyState(message, actionLabel, action) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = message;
+    if (actionLabel && action) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-secondary empty-state-action';
+      button.textContent = actionLabel;
+      button.addEventListener('click', action);
+      empty.appendChild(button);
+    }
     this.listEl.replaceChildren(empty);
+  },
+
+  renderSearchEmptyState(label, query) {
+    if (query) {
+      this.renderEmptyState(`No ${label} match “${query}”.`, 'Clear search', () => {
+        this.searchInput.value = '';
+        this.filterEntries();
+        this.searchInput.focus();
+      });
+    } else {
+      this.renderEmptyState(`No ${label} saved yet. Add your first item to get started.`, this.addBtn.title, () => this.addBtn.click());
+    }
   },
 
   renderLoadingState(message = 'Loading...') {

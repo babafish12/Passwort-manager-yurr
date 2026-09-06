@@ -13,10 +13,14 @@ const EntryForm = {
     this.cancelBtn = document.getElementById('form-cancel');
     this.togglePwBtn = document.getElementById('form-toggle-pw');
     this.generateBtn = document.getElementById('form-generate');
+    this.form = document.getElementById('entry-form');
 
     document.getElementById('back-from-form').addEventListener('click', () => this.cancel());
     this.cancelBtn.addEventListener('click', () => this.cancel());
-    this.saveBtn.addEventListener('click', () => this.handleSave());
+    this.form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      this.handleSave();
+    });
     this.togglePwBtn.addEventListener('click', () => this.togglePassword());
     this.generateBtn.addEventListener('click', () => this.generatePassword());
 
@@ -58,6 +62,7 @@ const EntryForm = {
     this.screen.classList.remove('hidden');
     window.animatePopupScreen?.(this.screen, 'forward');
     PasswordGenerator.updateStrength(entry.password);
+    this.urlInput.focus();
   },
 
   cancel() {
@@ -107,6 +112,7 @@ const EntryForm = {
   },
 
   async handleSave() {
+    if (this.saveBtn.disabled || !this.form.reportValidity()) return;
     const url = this.urlInput.value.trim();
     const username = this.usernameInput.value.trim();
     const password = this.passwordInput.value;
@@ -123,7 +129,7 @@ const EntryForm = {
       if (this.editingId) {
         await sendMessage('UPDATE_ENTRY', {
           id: this.editingId,
-          data: { website_url: url, username, password, notes: notes || null },
+          data: { website_url: url, username, password, notes },
         });
         showToast('Entry updated');
       } else {

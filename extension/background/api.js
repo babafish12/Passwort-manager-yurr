@@ -5,6 +5,7 @@ export class VaultAPI {
     this.token = null;
     this.serverUrl = null;
     this.tokenServerUrl = null;
+    this.tokenGeneration = 0;
   }
 
   createError(message, code) {
@@ -17,6 +18,7 @@ export class VaultAPI {
     const message = String(err?.message || '');
     return (
       err?.name === 'TypeError' ||
+      err?.name === 'TimeoutError' ||
       /Failed to fetch|NetworkError|fetch failed|ERR_/i.test(message)
     );
   }
@@ -78,11 +80,13 @@ export class VaultAPI {
   }
 
   setToken(token, serverUrl = null) {
+    if (this.token !== token) this.tokenGeneration += 1;
     this.token = token;
     this.tokenServerUrl = serverUrl || this.serverUrl || null;
   }
 
   clearToken() {
+    this.tokenGeneration += 1;
     this.token = null;
     this.tokenServerUrl = null;
   }
@@ -107,6 +111,11 @@ export class VaultAPI {
   async request(method, path, body = null, requiresAuth = true) {
     const serverUrl = await this.getServerUrl();
     const url = `${serverUrl}${API_BASE}${path}`;
+    const generation = this.tokenGeneration;
+
+    if (requiresAuth && !this.token) {
+      throw this.createError('Vault is locked. Please log in again.', 'AUTH_ERROR');
+    }
 
     const headers = { 'Content-Type': 'application/json' };
     if (requiresAuth && this.token) {
@@ -117,7 +126,7 @@ export class VaultAPI {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
-    const options = { method, headers };
+    const options = { method, headers, credentials: 'omit', redirect: 'error', cache: 'no-store' };
     if (body) {
       options.body = JSON.stringify(body);
     }
@@ -127,7 +136,7 @@ export class VaultAPI {
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        response = await fetch(url, options);
+        response = await fetch(url, { ...options, signal: AbortSignal.timeout(15000) });
         break;
       } catch (err) {
         if (attempt < maxAttempts && this.isLikelyNetworkError(err)) {
@@ -141,7 +150,18 @@ export class VaultAPI {
       }
     }
 
-    const rawText = await response.text();
+    let rawText;
+    try {
+      rawText = await response.text();
+    } catch (err) {
+      if (this.isLikelyNetworkError(err) || err?.name === 'AbortError') {
+        throw this.createError('Server response interrupted. Check the connection and try again.', 'NETWORK_ERROR');
+      }
+      throw err;
+    }
+    if (requiresAuth && generation !== this.tokenGeneration) {
+      throw this.createError('Session changed. Please try again.', 'SESSION_CHANGED');
+    }
     let data = {};
     if (rawText) {
       try {
@@ -172,6 +192,8 @@ export class VaultAPI {
   }
 
   async login(masterPassword, options = {}) {
+    const serverUrl = await this.getServerUrl();
+    const generation = this.tokenGeneration;
     const data = await this.request(
       'POST',
       '/auth/login',
@@ -181,14 +203,15 @@ export class VaultAPI {
       },
       false
     );
-    this.setToken(data.token, await this.getServerUrl());
+    if (generation !== this.tokenGeneration || serverUrl !== await this.getServerUrl()) {
+      throw this.createError('Session changed during login. Please try again.', 'SESSION_CHANGED');
+    }
+    this.setToken(data.token, serverUrl);
     return data;
   }
 
   async logout() {
-    const result = await this.request('POST', '/auth/logout');
-    this.clearToken();
-    return result;
+    return this.request('POST', '/auth/logout');
   }
 
   async validateSession() {
@@ -260,6 +283,7 @@ export class VaultAPI {
   // Favicon
   async getFavicon(domain) {
     const serverUrl = await this.getServerUrl();
+    const generation = this.tokenGeneration;
     const url = `${serverUrl}${API_BASE}/favicons/${encodeURIComponent(domain)}`;
     const headers = {};
     if (this.token) {
@@ -274,7 +298,12 @@ export class VaultAPI {
     const maxAttempts = 2;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        response = await fetch(url, { headers });
+        response = await fetch(url, {
+          headers,
+          credentials: 'omit',
+          redirect: 'error',
+          signal: AbortSignal.timeout(10000),
+        });
         break;
       } catch (err) {
         if (attempt < maxAttempts && this.isLikelyNetworkError(err)) {
@@ -293,11 +322,11 @@ export class VaultAPI {
     }
     if (!response.ok) return null;
     const blob = await response.blob();
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.readAsDataURL(blob);
-    });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    if (generation !== this.tokenGeneration) return null;
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return `data:${blob.type};base64,${btoa(binary)}`;
   }
 
   // Bulk import

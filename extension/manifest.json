@@ -22,6 +22,7 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "lib/site-scope.js",
         "content/heuristics.js",
         "content/overlay.js",
         "content/detector.js"

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=360">
@@ -12,9 +12,11 @@
       <div class="brand">
         <span class="logo-mark" aria-hidden="true">
           <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d="M14 8a4 4 0 1 1 0 8H7a3 3 0 0 1 0-6h7" />
-            <path d="m14 12 7 0" />
-            <path d="m18 9 0 6" />
+            <path d="M7 7.5 12 12.4 17 7.5" />
+            <path d="M12 12.4V18" />
+            <path d="M12 18h3" />
+            <path d="M14.6 18v-2.2" />
+            <circle class="logo-dot" cx="18" cy="6.7" r="2" />
           </svg>
         </span>
         <span class="logo">Yurrr</span>
@@ -229,19 +231,19 @@
         </button>
         <span id="form-title" class="detail-title">Add Entry</span>
       </div>
-      <div class="form-body">
+      <form id="entry-form" class="form-body">
         <div class="field">
           <label for="form-url">Website URL</label>
-          <input type="text" id="form-url" placeholder="https://example.com" autocomplete="url">
+          <input type="text" id="form-url" placeholder="https://example.com" autocomplete="url" required spellcheck="false">
         </div>
         <div class="field">
           <label for="form-username">Username / Email</label>
-          <input type="text" id="form-username" placeholder="user@example.com" autocomplete="username">
+          <input type="text" id="form-username" placeholder="user@example.com" autocomplete="username" required spellcheck="false">
         </div>
         <div class="field">
           <label for="form-password">Password</label>
           <div class="password-row">
-            <input type="password" id="form-password" placeholder="Password" autocomplete="new-password" aria-describedby="strength-text">
+            <input type="password" id="form-password" placeholder="Password" autocomplete="new-password" aria-describedby="strength-text" required>
             <button id="form-toggle-pw" class="icon-btn" title="Show" aria-label="Show password" type="button">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
@@ -275,7 +277,7 @@
               <span class="btn-label">Cancel</span>
             </span>
           </button>
-          <button id="form-save" class="btn btn-primary" type="button">
+          <button id="form-save" class="btn btn-primary" type="submit">
             <span class="btn-content">
               <svg class="icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="m5 12 4 4 10-10" />
@@ -284,10 +286,11 @@
             </span>
           </button>
         </div>
-      </div>
+      </form>
     </div>
   </div>
 
+  <script src="../lib/site-scope.js"></script>
   <script src="components/login.js"></script>
   <script src="components/entry-list.js"></script>
   <script src="components/entry-detail.js"></script>

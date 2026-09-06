@@ -1,131 +1,102 @@
-// CSV parser for browser password exports
+// CSV parser for browser password exports. Passwords and notes retain whitespace.
 const CSVParser = {
   parse(csvText, browserType) {
-    const lines = this.splitLines(csvText);
-    if (lines.length < 2) return [];
+    return this.parseWithReport(csvText, browserType).entries;
+  },
 
-    const headers = this.parseLine(lines[0], { trimFields: true });
+  parseWithReport(csvText, browserType) {
+    const rows = this.parseRows(String(csvText || '').replace(/^\uFEFF/, ''));
+    if (!rows.length) throw new Error('The CSV file is empty.');
+    const headers = rows.shift().map((value) => value.trim().toLowerCase());
+    for (const name of ['url', 'username', 'password']) {
+      if (headers.filter((header) => header === name).length !== 1) {
+        throw new Error(`CSV must contain exactly one ${name} column. Choose a browser password export.`);
+      }
+    }
+
     const entries = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const values = this.parseLine(lines[i], { trimFields: false });
-      if (!values.length || values.every((v) => !v)) continue;
-
-      let entry;
-      if (browserType === 'firefox') {
-        entry = this.parseFirefoxRow(headers, values);
-      } else {
-        entry = this.parseChromeRow(headers, values);
+    let skippedRows = 0;
+    for (const [index, values] of rows.entries()) {
+      if (values.length !== headers.length) {
+        throw new Error(`CSV record ${index + 2} has ${values.length} columns; expected ${headers.length}. Check the export file.`);
       }
-
-      if (entry && entry.website_url && entry.username && entry.password) {
-        // Normalize URL: add https:// if missing
-        if (!entry.website_url.startsWith('http')) {
-          entry.website_url = 'https://' + entry.website_url;
-        }
-        entries.push(entry);
+      const field = (name) => values[headers.indexOf(name)] || '';
+      const website = field('url').trim();
+      const username = field('username').trim();
+      const password = field('password');
+      let url;
+      try {
+        url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(website) ? website : `https://${website}`);
+      } catch {
+        skippedRows += 1;
+        continue;
       }
+      if (!website || !username || !password.trim() || !['https:', 'http:'].includes(url.protocol) || url.username || url.password) {
+        skippedRows += 1;
+        continue;
+      }
+      entries.push({
+        website_url: url.href,
+        username,
+        password,
+        notes: browserType === 'firefox' ? null : (field('note') || field('notes') || null),
+      });
     }
-    return entries;
+    return { entries, skippedRows, totalRows: rows.length };
   },
 
-  parseChromeRow(headers, values) {
-    const urlIdx = headers.findIndex((h) => h.toLowerCase() === 'url');
-    const userIdx = headers.findIndex((h) => h.toLowerCase() === 'username');
-    const pwIdx = headers.findIndex((h) => h.toLowerCase() === 'password');
-    const noteIdx = headers.findIndex((h) => h.toLowerCase() === 'note' || h.toLowerCase() === 'notes');
-
-    return {
-      website_url: this.fieldValue(values, urlIdx),
-      username: this.fieldValue(values, userIdx),
-      password: this.fieldValue(values, pwIdx, { trim: false }),
-      notes: noteIdx >= 0 ? this.fieldValue(values, noteIdx, { trim: false }) || null : null,
-    };
-  },
-
-  parseFirefoxRow(headers, values) {
-    const urlIdx = headers.findIndex((h) => h.toLowerCase() === 'url');
-    const userIdx = headers.findIndex((h) => h.toLowerCase() === 'username');
-    const pwIdx = headers.findIndex((h) => h.toLowerCase() === 'password');
-
-    return {
-      website_url: this.fieldValue(values, urlIdx),
-      username: this.fieldValue(values, userIdx),
-      password: this.fieldValue(values, pwIdx, { trim: false }),
-      notes: null,
-    };
-  },
-
-  fieldValue(values, index, { trim = true } = {}) {
-    if (index < 0 || index >= values.length) return '';
-    const value = values[index] ?? '';
-    return trim ? value.trim() : value;
-  },
-
-  // RFC 4180-compliant CSV line parser
-  parseLine(line, { trimFields = true } = {}) {
-    const values = [];
-    let current = '';
+  parseRows(text) {
+    const rows = [];
+    let row = [];
+    let field = '';
     let inQuotes = false;
-
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (inQuotes) {
-        if (char === '"') {
-          if (i + 1 < line.length && line[i + 1] === '"') {
-            current += '"';
-            i++;
-          } else {
-            inQuotes = false;
-          }
-        } else {
-          current += char;
-        }
-      } else {
-        if (char === '"' && current === '') {
-          inQuotes = true;
-        } else if (char === ',') {
-          values.push(trimFields ? current.trim() : current);
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-    }
-    values.push(trimFields ? current.trim() : current);
-    return values;
-  },
-
-  // Split text into lines, respecting quoted fields that contain newlines
-  splitLines(text) {
-    const lines = [];
-    let current = '';
-    let inQuotes = false;
+    let closedQuote = false;
+    let recordHasContent = false;
+    const finishField = () => {
+      row.push(field);
+      field = '';
+      closedQuote = false;
+    };
+    const finishRecord = () => {
+      finishField();
+      if (recordHasContent) rows.push(row);
+      row = [];
+      recordHasContent = false;
+    };
 
     for (let i = 0; i < text.length; i++) {
       const char = text[i];
-      if (char === '"') {
-        current += char;
-        if (inQuotes && text[i + 1] === '"') {
-          current += text[i + 1];
-          i++;
-          continue;
+      if (inQuotes) {
+        if (char === '"') {
+          if (text[i + 1] === '"') {
+            field += '"';
+            i += 1;
+          } else {
+            inQuotes = false;
+            closedQuote = true;
+          }
+        } else {
+          field += char;
         }
-        inQuotes = !inQuotes;
-        continue;
-      }
-
-      if ((char === '\n' || char === '\r') && !inQuotes) {
-        if (current.length) lines.push(current);
-        current = '';
-        if (char === '\r' && text[i + 1] === '\n') {
-          i++;
-        }
+      } else if (char === ',') {
+        recordHasContent = true;
+        finishField();
+      } else if (char === '\r' || char === '\n') {
+        finishRecord();
+        if (char === '\r' && text[i + 1] === '\n') i += 1;
+      } else if (char === '"' && !field && !closedQuote) {
+        recordHasContent = true;
+        inQuotes = true;
       } else {
-        current += char;
+        if (closedQuote || char === '"') {
+          throw new Error(`Invalid quoting in CSV record ${rows.length + 1}. Export the file again.`);
+        }
+        recordHasContent = true;
+        field += char;
       }
     }
-    if (current.length) lines.push(current);
-    return lines;
+    if (inQuotes) throw new Error('The CSV contains an unclosed quoted field. Export the file again.');
+    if (recordHasContent) finishRecord();
+    return rows;
   },
 };

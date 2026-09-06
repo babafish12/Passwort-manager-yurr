@@ -2,12 +2,12 @@
   display: none;
   position: absolute;
   z-index: 2147483647;
-  background: #1a1a2e;
-  border: 1px solid #2ecc71;
+  background: #172024;
+  border: 1px solid #d8b24c;
   border-radius: 8px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #e0e0e0;
+  box-shadow: 0 10px 28px rgba(23, 32, 36, 0.34);
+  font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #eef3ef;
   overflow: hidden;
   overflow-y: auto;
 }
@@ -17,27 +17,27 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #16213e;
-  border-bottom: 1px solid #0f3460;
+  background: #243039;
+  border-bottom: 1px solid rgba(216, 178, 76, 0.32);
 }
 
 .yurrr-overlay-logo {
   font-weight: 700;
-  color: #2ecc71;
+  color: #d8b24c;
   font-size: 13px;
 }
 
 .yurrr-overlay-subtitle {
   font-size: 11px;
-  color: #888;
+  color: #aab5b0;
 }
 
 .yurrr-overlay-password {
   padding: 10px 12px;
-  font-family: 'Courier New', monospace;
+  font-family: 'SFMono-Regular', 'Cascadia Mono', 'Roboto Mono', ui-monospace, monospace;
   font-size: 14px;
   word-break: break-all;
-  background: #0f3460;
+  background: #243039;
   margin: 8px;
   border-radius: 4px;
   user-select: all;
@@ -53,12 +53,12 @@
   gap: 8px;
   margin-bottom: 8px;
   font-size: 12px;
-  color: #888;
+  color: #aab5b0;
 }
 
 .yurrr-overlay-slider-row input[type="range"] {
   flex: 1;
-  accent-color: #2ecc71;
+  accent-color: #68c7b8;
 }
 
 .yurrr-overlay-actions {
@@ -78,22 +78,22 @@
 }
 
 .yurrr-btn-primary {
-  background: #2ecc71;
-  color: #1a1a2e;
+  background: #d8b24c;
+  color: #172024;
 }
 
 .yurrr-btn-primary:hover {
-  background: #27ae60;
+  background: #c59e3e;
 }
 
 .yurrr-btn-secondary {
-  background: #16213e;
-  color: #e0e0e0;
-  border: 1px solid #333;
+  background: #243039;
+  color: #eef3ef;
+  border: 1px solid rgba(216, 178, 76, 0.28);
 }
 
 .yurrr-btn-secondary:hover {
-  background: #1a2744;
+  background: #2d3a40;
 }
 
 /* Save prompt banner */
@@ -103,16 +103,16 @@
   left: 0;
   right: 0;
   z-index: 2147483647;
-  background: #1a1a2e;
-  border-bottom: 2px solid #2ecc71;
+  background: #172024;
+  border-bottom: 2px solid #d8b24c;
   padding: 12px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #e0e0e0;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #eef3ef;
+  box-shadow: 0 8px 22px rgba(23, 32, 36, 0.28);
   animation: yurrr-slide-down 0.3s ease;
 }
 
@@ -130,11 +130,11 @@
 }
 
 #yurrr-save-banner .yurrr-banner-text strong {
-  color: #2ecc71;
+  color: #d8b24c;
 }
 
 #yurrr-save-banner .yurrr-banner-text[data-variant='error'] {
-  color: #ffb4af;
+  color: #ffd3ce;
 }
 
 #yurrr-save-banner .yurrr-banner-actions {
@@ -148,7 +148,7 @@
   border: none;
   border-radius: 4px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
 }
 
@@ -158,13 +158,13 @@
 }
 
 .yurrr-banner-save {
-  background: #2ecc71;
-  color: #1a1a2e;
+  background: #d8b24c;
+  color: #172024;
 }
 
 .yurrr-banner-dismiss {
-  background: #333;
-  color: #e0e0e0;
+  background: #243039;
+  color: #eef3ef;
 }
 
 /* Credential picker icon */
@@ -173,8 +173,8 @@
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  background: #1a1a2e;
-  border: 1px solid #2ecc71;
+  background: #172024;
+  border: 1px solid #d8b24c;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -185,15 +185,15 @@
 }
 
 .yurrr-field-icon:hover {
-  background: #16213e;
+  background: #243039;
   transform: scale(1.08);
-  box-shadow: 0 2px 12px rgba(46, 204, 113, 0.3);
+  box-shadow: 0 2px 12px rgba(216, 178, 76, 0.32);
 }
 
 .yurrr-field-icon svg {
   width: 16px;
   height: 16px;
-  fill: #2ecc71;
+  fill: #d8b24c;
 }
 
 /* Credential picker dropdown */
@@ -201,12 +201,12 @@
   display: none;
   position: absolute;
   z-index: 2147483647;
-  background: #1a1a2e;
-  border: 1px solid #2ecc71;
+  background: #172024;
+  border: 1px solid #d8b24c;
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #e0e0e0;
+  font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  color: #eef3ef;
   overflow: hidden;
   min-width: 260px;
   animation: yurrr-picker-in 0.2s ease;
@@ -222,26 +222,26 @@
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: #16213e;
-  border-bottom: 1px solid #0f3460;
+  background: #243039;
+  border-bottom: 1px solid rgba(216, 178, 76, 0.32);
 }
 
 .yurrr-picker-header svg {
   width: 16px;
   height: 16px;
-  fill: #2ecc71;
+  fill: #d8b24c;
   flex-shrink: 0;
 }
 
 .yurrr-picker-title {
   font-weight: 700;
-  color: #2ecc71;
+  color: #d8b24c;
   font-size: 13px;
 }
 
 .yurrr-picker-subtitle {
   font-size: 11px;
-  color: #888;
+  color: #aab5b0;
   margin-left: auto;
 }
 
@@ -261,14 +261,14 @@
 }
 
 .yurrr-picker-item:hover {
-  background: #16213e;
+  background: #243039;
 }
 
 .yurrr-picker-item-avatar {
   width: 32px;
   height: 32px;
   border-radius: 6px;
-  background: #0f3460;
+  background: #243039;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -278,7 +278,7 @@
 .yurrr-picker-item-avatar svg {
   width: 16px;
   height: 16px;
-  fill: #2ecc71;
+  fill: #d8b24c;
 }
 
 .yurrr-picker-item-info {
@@ -289,7 +289,7 @@
 .yurrr-picker-item-user {
   font-size: 13px;
   font-weight: 600;
-  color: #e0e0e0;
+  color: #eef3ef;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -297,7 +297,7 @@
 
 .yurrr-picker-item-pass {
   font-size: 11px;
-  color: #666;
+  color: #aab5b0;
   letter-spacing: 2px;
   margin-top: 2px;
 }
@@ -313,7 +313,7 @@
 .yurrr-picker-item-check svg {
   width: 18px;
   height: 18px;
-  fill: #2ecc71;
+  fill: #68c7b8;
 }
 
 .yurrr-picker-item.yurrr-active .yurrr-picker-item-check {
@@ -321,5 +321,5 @@
 }
 
 .yurrr-picker-item.yurrr-active {
-  background: rgba(46, 204, 113, 0.08);
+  background: rgba(104, 199, 184, 0.12);
 }

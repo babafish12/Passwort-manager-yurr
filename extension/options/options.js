@@ -94,11 +94,13 @@ function showToast(message, variant = 'success') {
   }, 2500);
 }
 
-function hideStatusLater(el, delay = 2500) {
+function hideStatusLater(el, delay = 5000) {
   const existingTimer = statusHideTimers.get(el);
   if (existingTimer) {
     clearTimeout(existingTimer);
   }
+
+  if (el.classList.contains('error')) return;
 
   const timer = setTimeout(() => {
     el.className = 'status hidden';
@@ -165,11 +167,16 @@ testBtn.addEventListener('click', async () => {
   try {
     const url = normalizeServerUrlInput(serverUrlInput.value);
     serverUrlInput.value = url;
-    const resp = await fetch(`${url}/api/v1/auth/status`);
+    const resp = await fetch(`${url}/api/v1/auth/status`, {
+      signal: AbortSignal.timeout(8000), cache: 'no-store', redirect: 'error', credentials: 'omit',
+    });
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''}`);
     }
     const data = await resp.json();
+    if (typeof data.initialized !== 'boolean' || typeof data.server_version !== 'string') {
+      throw new Error('This address did not return a Yurrr server status');
+    }
     showStatus(
       `Connected! Server v${data.server_version} - ${data.initialized ? 'Vault initialized' : 'Vault not initialized'}`,
       'success'
@@ -336,21 +343,6 @@ function showPrivacyStatus(message, type) {
   showToast(message, type === 'error' ? 'error' : 'success');
 }
 
-function confirmDecryptedExport() {
-  const message = [
-    'This downloads every vault item as decrypted JSON.',
-    'Anyone with the file can read the passwords and notes.',
-    '',
-    `Type ${DECRYPTED_EXPORT_CONFIRMATION} to continue.`,
-  ].join('\n');
-  return window.prompt(message, '') === DECRYPTED_EXPORT_CONFIRMATION;
-}
-
-function promptExportMasterPassword() {
-  const value = window.prompt('Enter your master password to export decrypted vault data.', '');
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
 function downloadJson(filename, data) {
   const json = JSON.stringify(data ?? null, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
@@ -364,33 +356,55 @@ function downloadJson(filename, data) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-exportVaultBtn.addEventListener('click', async () => {
-  if (!confirmDecryptedExport()) {
-    showExportStatus('Export canceled.', 'error');
-    hideStatusLater(exportStatusEl, 3000);
+const exportDialog = document.getElementById('export-dialog');
+const exportForm = document.getElementById('export-form');
+const exportPassword = document.getElementById('export-master-password');
+const exportConfirmation = document.getElementById('export-confirmation');
+const exportSubmit = document.getElementById('export-submit');
+const exportError = document.getElementById('export-error');
+let exportGeneration = 0;
+
+exportVaultBtn.addEventListener('click', () => {
+  exportGeneration += 1;
+  exportForm.reset();
+  setButtonLoading(exportSubmit, false);
+  exportError.textContent = '';
+  exportConfirmation.setCustomValidity('');
+  exportDialog.showModal();
+});
+document.getElementById('export-cancel').addEventListener('click', () => exportDialog.close());
+exportDialog.addEventListener('close', () => {
+  exportGeneration += 1;
+  exportForm.reset();
+  setButtonLoading(exportSubmit, false);
+});
+exportConfirmation.addEventListener('input', () => exportConfirmation.setCustomValidity(''));
+exportForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (exportSubmit.disabled) return;
+  if (exportConfirmation.value !== DECRYPTED_EXPORT_CONFIRMATION) {
+    exportConfirmation.setCustomValidity(`Type ${DECRYPTED_EXPORT_CONFIRMATION} exactly.`);
+    exportConfirmation.reportValidity();
     return;
   }
-
-  let masterPassword = promptExportMasterPassword();
-  if (!masterPassword) {
-    showExportStatus('Export canceled.', 'error');
-    hideStatusLater(exportStatusEl, 3000);
-    return;
-  }
-
-  setButtonLoading(exportVaultBtn, true, 'Exporting...');
-
+  setButtonLoading(exportSubmit, true, 'Exporting...');
+  const generation = exportGeneration;
+  exportError.textContent = '';
   try {
-    const exportData = await sendBackgroundMessage('EXPORT_VAULT', { masterPassword });
+    const exportData = await sendBackgroundMessage('EXPORT_VAULT', { masterPassword: exportPassword.value });
+    // Canceling the dialog also cancels the download, including late responses.
+    if (!exportDialog.open || generation !== exportGeneration) return;
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     downloadJson(`yurrr-vault-export-${timestamp}.json`, exportData);
+    exportDialog.close();
     showExportStatus('Vault export downloaded.', 'success');
   } catch (err) {
-    showExportStatus(`Export failed: ${err.message}`, 'error');
+    if (exportDialog.open && generation === exportGeneration) exportError.textContent = `Export failed: ${err.message}`;
   } finally {
-    masterPassword = '';
-    setButtonLoading(exportVaultBtn, false);
-    hideStatusLater(exportStatusEl, 3000);
+    if (generation === exportGeneration) {
+      exportPassword.value = '';
+      setButtonLoading(exportSubmit, false);
+    }
   }
 });
 
@@ -456,6 +470,7 @@ function clearParsedImportState(clearFile = false) {
   parsedEntries = [];
   importBtn.disabled = true;
   previewArea.classList.add('hidden');
+  previewList.replaceChildren();
   if (clearFile) {
     csvFileInput.value = '';
     previewBtn.disabled = true;
@@ -481,93 +496,70 @@ browserSelect.addEventListener('change', () => {
   importStatus.classList.add('hidden');
 });
 
-previewBtn.addEventListener('click', () => {
+previewBtn.addEventListener('click', async () => {
   const file = csvFileInput.files[0];
-  if (!file) return;
-
+  if (!file || previewBtn.disabled) return;
+  clearParsedImportState();
   setButtonLoading(previewBtn, true, 'Parsing...');
+  csvFileInput.disabled = true;
+  browserSelect.disabled = true;
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const csvText = e.target.result;
-    const browserType = browserSelect.value;
-    parsedEntries = CSVParser.parse(csvText, browserType);
-
-    previewCount.textContent = parsedEntries.length;
-
-    if (!parsedEntries.length) {
-      previewList.innerHTML = '<div class="preview-item">No valid entries found in CSV file.</div>';
-      previewArea.classList.remove('hidden');
-      importBtn.disabled = true;
-      setButtonLoading(previewBtn, false);
-      return;
+  try {
+    const { entries, skippedRows } = CSVParser.parseWithReport(await file.text(), browserSelect.value);
+    parsedEntries = entries;
+    previewCount.textContent = entries.length;
+    previewList.innerHTML = entries.slice(0, 20).map((entry) => (
+      `<div class="preview-item"><strong>${escapeHtml(new URL(entry.website_url).host)}</strong> - ${escapeHtml(entry.username)}</div>`
+    )).join('');
+    if (!entries.length) previewList.textContent = 'No importable passwords found. Check the CSV columns and required values.';
+    if (entries.length > 20) {
+      const remaining = document.createElement('div');
+      remaining.className = 'preview-item';
+      remaining.textContent = `...and ${entries.length - 20} more`;
+      previewList.appendChild(remaining);
     }
-
-    previewList.innerHTML = parsedEntries
-      .slice(0, 20)
-      .map((entry) => {
-        let domain;
-        try {
-          domain = new URL(entry.website_url).hostname;
-        } catch {
-          domain = entry.website_url;
-        }
-        return `<div class="preview-item"><strong>${escapeHtml(domain)}</strong> - ${escapeHtml(entry.username)}</div>`;
-      })
-      .join('');
-
-    if (parsedEntries.length > 20) {
-      previewList.innerHTML += `<div class="preview-item">...and ${parsedEntries.length - 20} more</div>`;
-    }
-
     previewArea.classList.remove('hidden');
-    importBtn.disabled = false;
-    showToast(`Preview ready: ${parsedEntries.length} entries.`, 'success');
+    importBtn.disabled = entries.length === 0;
+    const skipped = skippedRows ? ` ${skippedRows} records cannot be imported (missing values or unsupported URLs).` : '';
+    showImportStatus(`Preview ready: ${entries.length} passwords.${skipped}`, skippedRows || !entries.length ? 'error' : 'success');
+  } catch (err) {
+    clearParsedImportState();
+    showImportStatus(`Could not parse CSV: ${err.message}`, 'error');
+  } finally {
     setButtonLoading(previewBtn, false);
-  };
-
-  reader.onerror = () => {
-    showToast('Could not read CSV file.', 'error');
-    setButtonLoading(previewBtn, false);
-  };
-
-  reader.readAsText(file);
+    csvFileInput.disabled = false;
+    browserSelect.disabled = false;
+  }
 });
 
 importBtn.addEventListener('click', async () => {
-  if (!parsedEntries.length) return;
-
+  if (!parsedEntries.length || importBtn.disabled) return;
+  const total = parsedEntries.length;
+  const summary = { imported: 0, skipped: 0, failed: 0, errors: [] };
+  const skipDuplicates = skipDuplicatesEl.checked;
   setButtonLoading(importBtn, true, 'Importing...');
-  showImportStatus(`Importing ${parsedEntries.length} entries...`, 'success', false);
+  csvFileInput.disabled = browserSelect.disabled = previewBtn.disabled = true;
+  skipDuplicatesEl.disabled = true;
 
   try {
-    const result = await new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        {
-          type: 'BULK_IMPORT',
-          payload: {
-            entries: parsedEntries,
-            skipDuplicates: skipDuplicatesEl.checked,
-          },
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (response && response.error) {
-            reject(new Error(response.error));
-          } else {
-            resolve(response);
-          }
-        }
-      );
-    });
-
-    showImportStatus(`Done! Imported: ${result.imported}, Skipped: ${result.skipped}, Failed: ${result.failed}`, 'success', true);
+    while (parsedEntries.length) {
+      const batch = parsedEntries.slice(0, 100);
+      showImportStatus(`Importing passwords: ${total - parsedEntries.length} of ${total} processed...`, 'success', false);
+      const result = await sendBackgroundMessage('BULK_IMPORT', { entries: batch, skipDuplicates });
+      for (const key of ['imported', 'skipped', 'failed']) summary[key] += result[key];
+      summary.errors.push(...(result.errors || []));
+      parsedEntries.splice(0, batch.length);
+    }
+    const errors = summary.errors.length ? `\n${summary.errors.slice(0, 10).join('\n')}` : '';
+    showImportStatus(`Imported: ${summary.imported}, skipped: ${summary.skipped}, failed: ${summary.failed}.${errors}`, summary.failed ? 'error' : 'success');
     clearParsedImportState(true);
   } catch (err) {
-    showImportStatus(`Import failed: ${err.message}`, 'error', true);
+    showImportStatus(`Import stopped: ${err.message}. ${total - parsedEntries.length} records processed; ${parsedEntries.length} remain. Enable “Skip duplicates” before retrying if the connection was interrupted.`, 'error');
   } finally {
     setButtonLoading(importBtn, false);
+    importBtn.disabled = !parsedEntries.length;
+    csvFileInput.disabled = browserSelect.disabled = skipDuplicatesEl.disabled = false;
+    previewBtn.disabled = !csvFileInput.files.length;
   }
 });
 

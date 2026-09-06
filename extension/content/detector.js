@@ -2,10 +2,13 @@
 const YurrrDetector = {
   initialized: false,
   detectedForms: new WeakSet(),
+  detectedAddressFields: new WeakSet(),
   activePicker: null,
   activePickerCleanup: null,
   activeEmailPicker: null,
   activeEmailPickerCleanup: null,
+  activeAddressPicker: null,
+  activeAddressPickerCleanup: null,
   scanQueued: false,
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
@@ -130,40 +133,8 @@ const YurrrDetector = {
     return String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
   },
 
-  isPrivateIPv4(hostname) {
-    const parts = this.normalizeHostname(hostname).split('.');
-    if (parts.length !== 4) return false;
-    const nums = parts.map((part) => Number.parseInt(part, 10));
-    if (nums.some((num, idx) => !Number.isInteger(num) || String(num) !== parts[idx] || num < 0 || num > 255)) {
-      return false;
-    }
-
-    return (
-      nums[0] === 10 ||
-      nums[0] === 127 ||
-      (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) ||
-      (nums[0] === 192 && nums[1] === 168) ||
-      (nums[0] === 169 && nums[1] === 254)
-    );
-  },
-
-  isPrivateIPv6(hostname) {
-    const host = this.normalizeHostname(hostname);
-    return (
-      host === '::1' ||
-      /^f[cd][0-9a-f]*:/i.test(host) ||
-      /^fe80:/i.test(host)
-    );
-  },
-
   isHttpDevHost(hostname) {
-    const host = this.normalizeHostname(hostname);
-    return (
-      host === 'localhost' ||
-      host.endsWith('.localhost') ||
-      this.isPrivateIPv4(host) ||
-      this.isPrivateIPv6(host)
-    );
+    return YurrrSiteScope.isLocalHost(hostname);
   },
 
   isCredentialPageAllowed() {
@@ -261,12 +232,12 @@ const YurrrDetector = {
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         .picker {
-          background: #1a1a2e;
-          border: 1px solid #2ecc71;
+          background: #172024;
+          border: 1px solid #d8b24c;
           border-radius: 8px;
-          box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-          color: #e0e0e0;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          box-shadow: 0 10px 28px rgba(23, 32, 36, 0.34);
+          color: #eef3ef;
+          font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
           overflow: hidden;
         }
         .header {
@@ -275,11 +246,11 @@ const YurrrDetector = {
           justify-content: space-between;
           gap: 8px;
           padding: 10px 14px;
-          background: #16213e;
-          border-bottom: 1px solid #0f3460;
+          background: #243039;
+          border-bottom: 1px solid rgba(216, 178, 76, 0.32);
         }
-        .title { font-weight: 700; color: #2ecc71; font-size: 13px; }
-        .subtitle { color: #888; font-size: 11px; }
+        .title { font-weight: 760; color: #d8b24c; font-size: 13px; }
+        .subtitle { color: #aab5b0; font-size: 11px; }
         .list { max-height: 220px; overflow-y: auto; padding: 4px 0; }
         .item {
           cursor: pointer;
@@ -291,7 +262,7 @@ const YurrrDetector = {
           transition: background 0.12s;
           white-space: nowrap;
         }
-        .item:hover { background: #16213e; }
+        .item:hover { background: #243039; }
       </style>
       <div class="picker">
         <div class="header">
@@ -348,7 +319,7 @@ const YurrrDetector = {
         const idx = Number.parseInt(item.dataset.index, 10);
         const email = suggestions[idx];
         this.fillEmailField(field, email);
-        this.rememberUsername(window.location.hostname, window.location.href, email);
+        this.rememberUsername(YurrrSiteScope.key(window.location.href), window.location.href, email);
         this.hideEmailPicker();
       });
     });
@@ -592,13 +563,384 @@ const YurrrDetector = {
 
       unField.addEventListener('change', () => {
         const username = unField.value || '';
-        this.rememberUsername(window.location.hostname, window.location.href, username);
+        this.rememberUsername(YurrrSiteScope.key(window.location.href), window.location.href, username);
       });
+    }
+
+    this.scanAddressFields();
+  },
+
+  getAddressFieldScope(field) {
+    return field?.closest('fieldset') || field?.closest('form') || document;
+  },
+
+  scanAddressFields() {
+    if (!this.isCredentialPageAllowed()) return;
+
+    const scopes = new Set();
+    const candidates = Array.from(document.querySelectorAll(YurrrHeuristics.addressFieldSelector || ''));
+    for (const field of candidates) {
+      if (!YurrrHeuristics.getAddressFieldKind(field)) continue;
+      scopes.add(this.getAddressFieldScope(field));
+    }
+
+    for (const scope of scopes) {
+      const fields = YurrrHeuristics.findAddressFields(scope);
+      for (const field of fields) {
+        if (this.detectedAddressFields.has(field)) continue;
+        this.detectedAddressFields.add(field);
+        this.attachAddressPicker(field);
+      }
+    }
+  },
+
+  attachAddressPicker(field) {
+    if (!field || field.dataset.yurrrAddressPickerAttached === '1') return;
+    field.dataset.yurrrAddressPickerAttached = '1';
+
+    let pickerOpen = false;
+    const openPicker = async (event) => {
+      if (!event.isTrusted) return;
+      if (pickerOpen) return;
+      pickerOpen = true;
+      const opened = await this.openAddressPicker(field, () => {
+        pickerOpen = false;
+      });
+      if (!opened) pickerOpen = false;
+    };
+
+    field.addEventListener('focus', openPicker);
+    field.addEventListener('click', openPicker);
+  },
+
+  async loadAddressesForFill() {
+    const response = await this.sendRuntimeMessage('LIST_ADDRESSES_FOR_FILL', {
+      pageUrl: window.location.href,
+      userGesture: true,
+    });
+    return Array.isArray(response?.addresses) ? response.addresses : [];
+  },
+
+  async openAddressPicker(targetField, onClose) {
+    if (!targetField?.isConnected || !this.isCredentialPageAllowed()) return false;
+    if (!this.getAddressFieldsForScope(targetField).length) return false;
+
+    try {
+      const addresses = await this.loadAddressesForFill();
+      if (!addresses.length || !targetField.isConnected || document.activeElement !== targetField) return false;
+      this.showAddressPicker(targetField, addresses, onClose);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  getAddressLabel(address) {
+    return String(address?.label || address?.full_name || 'Address').trim();
+  },
+
+  getAddressSubtitle(address) {
+    const cityLine = [address?.postal_code, address?.city].filter(Boolean).join(' ');
+    return [address?.line1, cityLine, address?.country].filter(Boolean).join(', ');
+  },
+
+  showAddressPicker(targetField, addresses, onClose) {
+    this.hideAddressPicker();
+    this.hidePicker();
+    this.hideEmailPicker();
+
+    const host = document.createElement('div');
+    Object.assign(host.style, {
+      position: 'absolute',
+      zIndex: '2147483647',
+      margin: '0',
+      padding: '0',
+    });
+    const shadow = host.attachShadow({ mode: 'closed' });
+
+    shadow.innerHTML = `
+      <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        .picker {
+          background: #172024;
+          border: 1px solid #d8b24c;
+          border-radius: 8px;
+          box-shadow: 0 10px 28px rgba(23, 32, 36, 0.34);
+          color: #eef3ef;
+          font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+          overflow: hidden;
+        }
+        .header {
+          align-items: center;
+          background: #243039;
+          border-bottom: 1px solid rgba(216, 178, 76, 0.32);
+          display: flex;
+          gap: 8px;
+          padding: 10px 14px;
+        }
+        .header svg { fill: #d8b24c; flex-shrink: 0; height: 16px; width: 16px; }
+        .title { color: #d8b24c; font-size: 13px; font-weight: 760; }
+        .subtitle { color: #aab5b0; font-size: 11px; margin-left: auto; }
+        .list { max-height: 240px; overflow-y: auto; padding: 4px 0; }
+        .item {
+          align-items: center;
+          cursor: pointer;
+          display: flex;
+          gap: 10px;
+          padding: 10px 14px;
+          transition: background 0.12s;
+        }
+        .item:hover { background: #243039; }
+        .item.active { background: rgba(104,199,184,0.12); }
+        .avatar {
+          align-items: center;
+          background: #243039;
+          border-radius: 6px;
+          display: flex;
+          flex-shrink: 0;
+          height: 32px;
+          justify-content: center;
+          width: 32px;
+        }
+        .avatar svg { fill: #d8b24c; height: 16px; width: 16px; }
+        .info { flex: 1; min-width: 0; }
+        .name {
+          color: #eef3ef;
+          font-size: 13px;
+          font-weight: 700;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .details {
+          color: #aab5b0;
+          font-size: 11px;
+          margin-top: 2px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .check { flex-shrink: 0; height: 18px; opacity: 0; transition: opacity 0.15s; width: 18px; }
+        .check svg { fill: #68c7b8; height: 18px; width: 18px; }
+        .item.active .check { opacity: 1; }
+      </style>
+      <div class="picker">
+        <div class="header">
+          <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+          <span class="title">Yurrr</span>
+          <span class="subtitle">${addresses.length} Adressen</span>
+        </div>
+        <div class="list">
+          ${addresses
+            .map((address, i) => `
+              <div class="item" data-index="${i}">
+                <div class="avatar">
+                  <svg viewBox="0 0 24 24"><path d="M12 2 2 7v15h20V7L12 2zm0 2.2 7 3.5V20H5V7.7l7-3.5zM8 10h8v2H8v-2zm0 4h8v2H8v-2z"/></svg>
+                </div>
+                <div class="info">
+                  <div class="name">${this.escapeHtml(this.getAddressLabel(address))}</div>
+                  <div class="details">${this.escapeHtml(this.getAddressSubtitle(address))}</div>
+                </div>
+                <div class="check">
+                  <svg viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                </div>
+              </div>
+            `)
+            .join('')}
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(host);
+    this.activeAddressPicker = host;
+    this.positionFloatingHost(host, targetField, 280);
+
+    let closed = false;
+    let outsideClickTimer = null;
+
+    const outsideClickHandler = (e) => {
+      if (!host.contains(e.target) && e.target !== targetField) {
+        this.hideAddressPicker();
+      }
+    };
+
+    const escHandler = (e) => {
+      if (e.key === 'Escape') this.hideAddressPicker();
+    };
+
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      if (outsideClickTimer !== null) {
+        clearTimeout(outsideClickTimer);
+        outsideClickTimer = null;
+      }
+      document.removeEventListener('click', outsideClickHandler);
+      document.removeEventListener('keydown', escHandler);
+      if (this.activeAddressPicker === host) {
+        this.activeAddressPicker = null;
+      }
+      if (this.activeAddressPickerCleanup === cleanup) {
+        this.activeAddressPickerCleanup = null;
+      }
+      host.remove();
+      if (onClose) onClose();
+    };
+    this.activeAddressPickerCleanup = cleanup;
+
+    shadow.querySelectorAll('.item').forEach((item) => {
+      item.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        const idx = Number.parseInt(item.dataset.index, 10);
+        const address = addresses[idx];
+        this.fillAddressFields(targetField, address);
+
+        shadow.querySelectorAll('.item').forEach((el) => el.classList.remove('active'));
+        item.classList.add('active');
+
+        setTimeout(() => this.hideAddressPicker(), 150);
+      });
+    });
+
+    outsideClickTimer = setTimeout(() => {
+      outsideClickTimer = null;
+      if (!closed) {
+        document.addEventListener('click', outsideClickHandler);
+      }
+    }, 0);
+    document.addEventListener('keydown', escHandler);
+  },
+
+  hideAddressPicker() {
+    if (this.activeAddressPickerCleanup) {
+      const cleanup = this.activeAddressPickerCleanup;
+      this.activeAddressPickerCleanup = null;
+      cleanup();
+      return;
+    }
+
+    if (this.activeAddressPicker) {
+      this.activeAddressPicker.remove();
+    }
+    this.activeAddressPicker = null;
+  },
+
+  getAddressFieldsForScope(targetField) {
+    const scope = this.getAddressFieldScope(targetField);
+    const group = (field) => YurrrHeuristics.getAutocompleteTokens(field)
+      .filter((token) => token.startsWith('section-') || token === 'shipping' || token === 'billing')
+      .join(' ');
+    const targetGroup = group(targetField);
+    return YurrrHeuristics.findAddressFields(scope).filter((field) => group(field) === targetGroup);
+  },
+
+  getNameParts(fullName) {
+    const parts = String(fullName || '').trim().split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) {
+      return { givenName: parts[0] || '', familyName: '' };
+    }
+
+    return {
+      givenName: parts.slice(0, -1).join(' '),
+      familyName: parts[parts.length - 1],
+    };
+  },
+
+  getAddressValueForKind(kind, address, field) {
+    const fullName = String(address?.full_name || '').trim();
+    const { givenName, familyName } = this.getNameParts(fullName);
+    const line1 = String(address?.line1 || '').trim();
+    const line2 = String(address?.line2 || '').trim();
+
+    switch (kind) {
+      case 'given_name':
+        return givenName;
+      case 'family_name':
+        return familyName;
+      case 'full_name':
+        return fullName;
+      case 'street_address': {
+        if ((field?.tagName || '').toLowerCase() === 'textarea') {
+          return [line1, line2].filter(Boolean).join('\n');
+        }
+        return [line1, line2].filter(Boolean).join(', ');
+      }
+      case 'line1':
+        return line1;
+      case 'line2':
+        return line2;
+      case 'city':
+        return String(address?.city || '').trim();
+      case 'postal_code':
+        return String(address?.postal_code || '').trim();
+      case 'country':
+        return String(address?.country || '').trim();
+      default:
+        return '';
+    }
+  },
+
+  normalizeSelectMatch(value) {
+    return String(value || '').trim().toLowerCase().replace(/[\s._-]+/g, '');
+  },
+
+  findMatchingSelectOption(select, value) {
+    const needle = this.normalizeSelectMatch(value);
+    if (!needle) return null;
+
+    return Array.from(select.options || []).find((option) => {
+      const candidates = [
+        option.value,
+        option.textContent,
+        option.label,
+      ].map((item) => this.normalizeSelectMatch(item));
+      return candidates.includes(needle);
+    }) || null;
+  },
+
+  setFieldValue(field, value) {
+    const normalized = String(value || '').trim();
+    if (!field || !normalized) return false;
+
+    const tagName = String(field.tagName || '').toLowerCase();
+    if (tagName === 'select') {
+      const option = this.findMatchingSelectOption(field, normalized);
+      if (!option) return false;
+      field.value = option.value;
+    } else if (tagName === 'textarea') {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(field, normalized);
+      } else {
+        field.value = normalized;
+      }
+    } else {
+      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(field, normalized);
+      } else {
+        field.value = normalized;
+      }
+    }
+
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  },
+
+  fillAddressFields(targetField, address) {
+    if (!address) return;
+
+    const fields = this.getAddressFieldsForScope(targetField);
+    for (const field of fields) {
+      const kind = YurrrHeuristics.getAddressFieldKind(field);
+      const value = this.getAddressValueForKind(kind, address, field);
+      this.setFieldValue(field, value);
     }
   },
 
   async loadCredentialsForFields(usernameField) {
-    const domain = window.location.hostname;
+    const domain = YurrrSiteScope.key(window.location.href);
     let preferredUsername = String(usernameField?.value || '').trim();
     if (!preferredUsername) {
       preferredUsername = await this.getRememberedUsername(domain);
@@ -620,6 +962,7 @@ const YurrrDetector = {
   canAutofillWithCredential(usernameField, passwordField, credential, options = {}) {
     if (!passwordField || !credential?.id) return false;
     if (!passwordField.isConnected) return false;
+    if (passwordField.disabled || passwordField.readOnly) return false;
     if (YurrrHeuristics.isHidden(passwordField)) return false;
     if (String(passwordField.value || '').length > 0) return false;
 
@@ -685,7 +1028,7 @@ const YurrrDetector = {
     try {
       const response = await this.sendRuntimeMessage('GET_CREDENTIAL_FOR_AUTOFILL', {
         id: credential.id,
-        domain: window.location.hostname,
+        domain: YurrrSiteScope.key(window.location.href),
         pageUrl: window.location.href,
       });
       const fillCredential = response?.credential;
@@ -813,7 +1156,7 @@ const YurrrDetector = {
     try {
       await this.sendRuntimeMessage('REMEMBER_SELECTED_CREDENTIAL', {
         id,
-        domain: window.location.hostname,
+        domain: YurrrSiteScope.key(window.location.href),
         pageUrl: window.location.href,
       });
     } catch {
@@ -839,12 +1182,12 @@ const YurrrDetector = {
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         .picker {
-          background: #1a1a2e;
-          border: 1px solid #2ecc71;
+          background: #172024;
+          border: 1px solid #d8b24c;
           border-radius: 8px;
-          box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-          color: #e0e0e0;
+          box-shadow: 0 10px 28px rgba(23, 32, 36, 0.34);
+          font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+          color: #eef3ef;
           overflow: hidden;
           animation: fadeIn 0.2s ease;
         }
@@ -857,12 +1200,12 @@ const YurrrDetector = {
           align-items: center;
           gap: 8px;
           padding: 10px 14px;
-          background: #16213e;
-          border-bottom: 1px solid #0f3460;
+          background: #243039;
+          border-bottom: 1px solid rgba(216, 178, 76, 0.32);
         }
-        .header svg { width: 16px; height: 16px; fill: #2ecc71; flex-shrink: 0; }
-        .title { font-weight: 700; color: #2ecc71; font-size: 13px; }
-        .subtitle { font-size: 11px; color: #888; margin-left: auto; }
+        .header svg { width: 16px; height: 16px; fill: #d8b24c; flex-shrink: 0; }
+        .title { font-weight: 760; color: #d8b24c; font-size: 13px; }
+        .subtitle { font-size: 11px; color: #aab5b0; margin-left: auto; }
         .list { padding: 4px 0; max-height: 240px; overflow-y: auto; }
         .item {
           display: flex;
@@ -872,26 +1215,26 @@ const YurrrDetector = {
           cursor: pointer;
           transition: background 0.12s;
         }
-        .item:hover { background: #16213e; }
-        .item.active { background: rgba(46,204,113,0.08); }
+        .item:hover { background: #243039; }
+        .item.active { background: rgba(104,199,184,0.12); }
         .avatar {
           width: 32px; height: 32px;
           border-radius: 6px;
-          background: #0f3460;
+          background: #243039;
           display: flex;
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
         }
-        .avatar svg { width: 16px; height: 16px; fill: #2ecc71; }
+        .avatar svg { width: 16px; height: 16px; fill: #d8b24c; }
         .info { flex: 1; min-width: 0; }
         .user {
-          font-size: 13px; font-weight: 600; color: #e0e0e0;
+          font-size: 13px; font-weight: 700; color: #eef3ef;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
-        .pass { font-size: 11px; color: #666; letter-spacing: 2px; margin-top: 2px; }
+        .pass { font-size: 11px; color: #aab5b0; letter-spacing: 2px; margin-top: 2px; }
         .check { width: 18px; height: 18px; flex-shrink: 0; opacity: 0; transition: opacity 0.15s; }
-        .check svg { width: 18px; height: 18px; fill: #2ecc71; }
+        .check svg { width: 18px; height: 18px; fill: #68c7b8; }
         .item.active .check { opacity: 1; }
       </style>
       <div class="picker">
@@ -975,7 +1318,7 @@ const YurrrDetector = {
           if (passwordField) {
             const response = await this.sendRuntimeMessage('GET_CREDENTIAL_FOR_FILL', {
               id: cred.id,
-              domain: window.location.hostname,
+              domain: YurrrSiteScope.key(window.location.href),
               pageUrl: window.location.href,
               userGesture: true,
             });
@@ -984,7 +1327,7 @@ const YurrrDetector = {
 
           if (!fillCredential) return;
           this.fillFields(usernameField, passwordField, fillCredential);
-          this.rememberUsername(window.location.hostname, window.location.href, fillCredential.username);
+          this.rememberUsername(YurrrSiteScope.key(window.location.href), window.location.href, fillCredential.username);
           void this.rememberSelectedCredential(fillCredential.id);
         } catch {
           return;
@@ -1159,7 +1502,8 @@ const YurrrDetector = {
     if (!this.isCredentialPageAllowed()) return;
 
     const url = window.location.href;
-    const domain = window.location.hostname;
+    const domain = YurrrSiteScope.key(window.location.href);
+    const isPasswordChange = YurrrHeuristics.isPasswordChangeForm(form);
     const resolvedUsernameField = usernameField || YurrrHeuristics.findRegistrationEmailField(form, passwordField);
     const typedUsername = String(resolvedUsernameField?.value || '').trim();
     const password = passwordField?.value;
@@ -1179,6 +1523,7 @@ const YurrrDetector = {
       pageUrl: url,
       username,
       password,
+      isPasswordChange,
       promptReady: false,
     };
 
@@ -1203,7 +1548,7 @@ const YurrrDetector = {
   async checkPendingCredentials() {
     if (!this.isCredentialPageAllowed()) return;
 
-    const domain = window.location.hostname;
+    const domain = YurrrSiteScope.key(window.location.href);
 
     try {
       const response = await this.sendRuntimeMessage('CHECK_PENDING_CREDENTIALS', {
@@ -1224,7 +1569,7 @@ const YurrrDetector = {
     }
   },
 
-  showSaveBanner(url, username, password, domain = window.location.hostname, options = {}) {
+  showSaveBanner(url, username, password, domain = YurrrSiteScope.key(window.location.href), options = {}) {
     if (this.saveBannerCleanup) {
       this.saveBannerCleanup(false);
     } else {

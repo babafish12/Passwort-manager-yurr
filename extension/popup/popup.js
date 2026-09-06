@@ -327,12 +327,19 @@ window.loadPopupFaviconImage = loadPopupFaviconImage;
 
 // Utility: Send message to service worker
 async function sendMessage(type, payload = {}) {
+  const generation = vaultViewGeneration;
   if (type === 'GET_FAVICON' && !(await areFaviconsEnabled())) {
     return { dataUrl: null };
   }
 
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ type, payload }, (response) => {
+      if (generation !== vaultViewGeneration && !['LOGOUT', 'GET_STATUS'].includes(type)) {
+        const err = new Error('Session changed. Please try again.');
+        err.code = 'SESSION_CHANGED';
+        reject(err);
+        return;
+      }
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
         return;
@@ -518,28 +525,32 @@ let sessionLossInProgress = false;
 let resumeUnlockedSessionInProgress = false;
 let sessionInvalidToastShown = false;
 let startupComplete = false;
+let vaultViewGeneration = 0;
 
 function isSessionLostError(err) {
-  return err?.code === 'SESSION_LOST';
+  return err?.code === 'SESSION_LOST' || err?.code === 'SESSION_CHANGED';
+}
+
+function clearVaultView() {
+  vaultViewGeneration += 1;
+  VaultSections.renderGeneration += 1;
+  VaultSections.invalidateEntityCache();
+  window.dispatchEvent(new Event('yurrr-vault-locked'));
+  EntryDetail.hide();
+  EntryForm.clearSensitiveFields();
+  EntryList.entries = [];
+  EntryList.listEl.replaceChildren();
+  document.getElementById('lock-btn').classList.add('hidden');
+  hideAllScreens();
 }
 
 async function handleSessionLoss(err) {
   if (sessionLossInProgress) return;
   sessionLossInProgress = true;
 
-  try {
-    await sendMessage('LOGOUT');
-  } catch {
-    // Local lock is still handled in the service worker error path.
-  }
-
-  const lockBtn = document.getElementById('lock-btn');
-  if (lockBtn) lockBtn.classList.add('hidden');
-  window.VaultSections?.invalidateEntityCache?.();
-  await EntryDetail.clearResumeState?.();
-  hideAllScreens();
+  clearVaultView();
   LoginScreen.show();
-  showToast(err?.message || 'Verbindung verloren. Bitte erneut anmelden.', 'error');
+  showToast(err?.message || 'Session expired. Please log in again.', 'error');
   sessionLossInProgress = false;
 }
 
@@ -703,6 +714,7 @@ function showConfirmDialog({
     `;
 
     const close = (value) => {
+      window.removeEventListener('yurrr-vault-locked', cancel);
       overlay.removeEventListener('keydown', onKeydown);
       overlay.remove();
       if (previousFocus?.isConnected) previousFocus.focus();
@@ -727,6 +739,7 @@ function showConfirmDialog({
     });
 
     overlay.addEventListener('keydown', onKeydown);
+    window.addEventListener('yurrr-vault-locked', cancel, { once: true });
     document.body.appendChild(overlay);
     const cancelBtn = overlay.querySelector('.confirm-cancel');
     if (cancelBtn) {
@@ -747,6 +760,8 @@ function hideBootScreen() {
 
 const VaultSections = {
   activeTab: 'passwords',
+  renderGeneration: 0,
+  cacheGeneration: 0,
   LOCAL_STORAGE_KEYS: {
     card: 'yurrr_cards',
     address: 'yurrr_addresses',
@@ -807,7 +822,7 @@ const VaultSections = {
 
     const target = this.sectionTabs[nextIndex];
     target.button.focus();
-    this.setActiveTab(target.tab).catch((err) => {
+    this.setActiveTab(target.tab, { focusSearch: false }).catch((err) => {
       showToast(`Error: ${err.message}`, 'error');
     });
   },
@@ -851,6 +866,7 @@ const VaultSections = {
   },
 
   async setActiveTab(tab, options = {}) {
+    this.renderGeneration += 1;
     this.activeTab = tab;
     this.updateChipState();
 
@@ -861,7 +877,7 @@ const VaultSections = {
       this.searchInput.placeholder = 'Search passwords...';
       this.addBtn.title = 'Add password';
       this.addBtn.setAttribute('aria-label', 'Add password');
-      await EntryList.show({ initialEntries: options.passwordEntries || null });
+      await EntryList.show({ initialEntries: options.passwordEntries || null, focusSearch: options.focusSearch !== false });
       return;
     }
 
@@ -1067,6 +1083,7 @@ const VaultSections = {
   },
 
   async listVaultEntities(itemType) {
+    const generation = this.cacheGeneration;
     try {
       await this.migrateLocalItems(itemType);
     } catch (err) {
@@ -1079,11 +1096,12 @@ const VaultSections = {
 
     const items = await this.fetchVaultItems(itemType);
     const mapped = items.map((item) => this.mapVaultItem(item, itemType));
-    this.entityCache[itemType] = mapped;
+    if (generation === this.cacheGeneration) this.entityCache[itemType] = mapped;
     return mapped;
   },
 
   invalidateEntityCache(itemType) {
+    this.cacheGeneration += 1;
     if (itemType) {
       delete this.entityCache[itemType];
       return;
@@ -1116,8 +1134,8 @@ const VaultSections = {
   },
 
   renderLoadError(label, err) {
-    this.listEl.innerHTML = `<div class="empty-state">Could not load ${escapeHtml(label)}</div>`;
-    showToast(`Error: ${err.message}`, 'error');
+    if (isSessionLostError(err)) return;
+    EntryList.renderEmptyState(`Could not load ${label}. ${err.message}`, 'Try again', () => this.renderCurrentTab());
   },
 
   isActivationKey(event) {
@@ -1243,13 +1261,17 @@ const VaultSections = {
   },
 
   async renderPasskeys() {
+    const generation = ++this.renderGeneration;
     let passkeys;
     try {
       passkeys = await this.listVaultEntities('passkey');
     } catch (err) {
+      if (generation !== this.renderGeneration) return;
       this.renderLoadError('passkeys', err);
       return;
     }
+
+    if (generation !== this.renderGeneration || this.activeTab !== 'passkeys') return;
 
     const query = this.searchInput.value.trim().toLowerCase();
     const filtered = !query
@@ -1260,7 +1282,7 @@ const VaultSections = {
         });
 
     if (!filtered.length) {
-      this.listEl.innerHTML = '<div class="empty-state">No passkeys saved yet</div>';
+      EntryList.renderSearchEmptyState('passkeys', query);
       return;
     }
 
@@ -1308,13 +1330,17 @@ const VaultSections = {
   },
 
   async renderCards() {
+    const generation = ++this.renderGeneration;
     let cards;
     try {
       cards = await this.listVaultEntities('card');
     } catch (err) {
+      if (generation !== this.renderGeneration) return;
       this.renderLoadError('cards', err);
       return;
     }
+
+    if (generation !== this.renderGeneration || this.activeTab !== 'cards') return;
 
     const query = this.searchInput.value.trim().toLowerCase();
     const filtered = !query
@@ -1325,7 +1351,7 @@ const VaultSections = {
         });
 
     if (!filtered.length) {
-      this.listEl.innerHTML = '<div class="empty-state">No cards saved yet</div>';
+      EntryList.renderSearchEmptyState('cards', query);
       return;
     }
 
@@ -1373,24 +1399,28 @@ const VaultSections = {
   },
 
   async renderAddresses() {
+    const generation = ++this.renderGeneration;
     let addresses;
     try {
       addresses = await this.listVaultEntities('address');
     } catch (err) {
+      if (generation !== this.renderGeneration) return;
       this.renderLoadError('addresses', err);
       return;
     }
+
+    if (generation !== this.renderGeneration || this.activeTab !== 'addresses') return;
 
     const query = this.searchInput.value.trim().toLowerCase();
     const filtered = !query
       ? addresses
       : addresses.filter((address) => {
-          const text = `${address.label || ''} ${address.full_name || ''} ${address.line1 || ''} ${address.city || ''} ${address.country || ''}`.toLowerCase();
+          const text = `${address.label || ''} ${address.full_name || ''} ${address.line1 || ''} ${address.line2 || ''} ${address.city || ''} ${address.postal_code || ''} ${address.country || ''}`.toLowerCase();
           return text.includes(query);
         });
 
     if (!filtered.length) {
-      this.listEl.innerHTML = '<div class="empty-state">No addresses saved yet</div>';
+      EntryList.renderSearchEmptyState('addresses', query);
       return;
     }
 
@@ -1756,12 +1786,15 @@ const VaultSections = {
       document.body.appendChild(overlay);
 
       const close = (result = null) => {
+        window.removeEventListener('yurrr-vault-locked', cancel);
         overlay.removeEventListener('keydown', onKeydown);
         overlay.remove();
         if (previousFocus?.isConnected) previousFocus.focus();
         resolve(result);
       };
 
+      const cancel = () => close(null);
+      window.addEventListener('yurrr-vault-locked', cancel, { once: true });
       const onKeydown = (event) => {
         if (event.key === 'Escape') {
           close(null);
@@ -1817,6 +1850,14 @@ document.getElementById('settings-btn').addEventListener('click', () => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  if ((areaName === 'local' || areaName === 'session') &&
+      ((changes.yurrr_token?.oldValue && !changes.yurrr_token.newValue) ||
+       (areaName === 'local' && changes.yurrr_server_url))) {
+    if (document.getElementById('login-screen').classList.contains('hidden')) {
+      clearVaultView();
+      void LoginScreen.show();
+    }
+  }
   if (areaName === 'local' && changes.yurrr_server_url) {
     window.VaultSections?.invalidateEntityCache?.();
   }
@@ -1828,16 +1869,14 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
 // Lock button
 document.getElementById('lock-btn').addEventListener('click', async () => {
+  const logout = sendMessage('LOGOUT');
+  clearVaultView();
+  void LoginScreen.show();
   try {
-    await sendMessage('LOGOUT');
+    await logout;
   } catch {
     // local lock fallback still happens below
   }
-  window.VaultSections?.invalidateEntityCache?.();
-  await EntryDetail.clearResumeState?.();
-  document.getElementById('lock-btn').classList.add('hidden');
-  hideAllScreens();
-  LoginScreen.show();
 });
 
 function hideAllScreens() {

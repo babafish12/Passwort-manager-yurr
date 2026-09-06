@@ -48,6 +48,8 @@ exports, export the vault, and manage cards, addresses, and passkey metadata.
 - Argon2id master-password hashing and key derivation.
 - Password list, search, detail view, add, edit, delete, copy, and reveal.
 - Domain-aware autofill for saved login forms.
+- Port-aware logins for local IP addresses, so independent LAN services can use
+  different passwords on the same host.
 - Save prompt after trusted login/signup form submission.
 - Password generator with configurable character groups.
 - CSV import from Chrome, Brave, and Firefox password exports.
@@ -430,6 +432,15 @@ action so keyboard and screen-reader users do not have nested controls.
 4. Use the generator if you need a new password.
 5. Save.
 
+For LAN services, include the port in the website URL, for example
+`http://192.168.1.10:8080` and `http://192.168.1.10:9000`. You can save the same
+username with a different password for each port. Search, account suggestions,
+autofill, save prompts, and imports distinguish these services. An omitted port
+means port 80 for HTTP or 443 for HTTPS. This applies to private IPv4/IPv6,
+loopback, link-local, and Tailscale/CGNAT addresses; public websites retain their
+existing hostname-based matching. Existing entries use their saved URL without
+a database migration. Update both the server and extension to enable this.
+
 ### Autofill a saved login
 
 1. Visit a login page.
@@ -527,8 +538,9 @@ The popup includes sections for:
 - Addresses.
 - Passkeys.
 
-Cards, addresses, and passkeys are stored as encrypted vault item payloads. Card
-and address browser autofill is not implemented yet. Passkeys are stored as
+Cards, addresses, and passkeys are stored as encrypted vault item payloads.
+Address fields offer a picker that fills the matching address section after you
+choose an address. Card autofill is not implemented yet. Passkeys are stored as
 metadata only and are not usable as a WebAuthn authenticator.
 
 ### Locking behavior
@@ -642,14 +654,21 @@ configuration, TLS files, environment variables, or the systemd service changes.
 ### Run server tests
 
 ```bash
-cargo test --manifest-path server/Cargo.toml
+cargo test --manifest-path server/Cargo.toml --locked
+cargo clippy --manifest-path server/Cargo.toml --locked --all-targets -- -D warnings
 ```
 
-### Check extension JavaScript syntax
+### Run extension regression tests and check JavaScript syntax
 
 ```bash
-find extension -name '*.js' -print0 | xargs -0 -n1 node --check
+node --test tests/*.test.mjs
+rg --files extension -g '*.js' -0 | xargs -0 -n1 node --check
 ```
+
+The tests use synthetic credentials and an in-memory SQLite vault. They cover
+LAN port isolation, API lifecycle and re-encryption, session races, CSV parsing,
+and popup behavior. The Rust and JavaScript scope tests share the same URL cases.
+The extension tests require Node.js 22 or later and no npm dependencies.
 
 ### Check whitespace in the Git diff
 
@@ -811,6 +830,6 @@ vault usernames.
 - Metadata encryption for website domains, URLs, usernames, labels, and item
   metadata.
 - Real WebAuthn/passkey integration instead of stored passkey metadata.
-- Card and address autofill.
+- Card autofill.
 - Stronger certificate deployment guide for DNS/IP SAN certificates.
 - Optional packaged extension release flow.

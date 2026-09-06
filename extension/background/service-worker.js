@@ -1,3 +1,4 @@
+import '../lib/site-scope.js';
 import { VaultAPI } from './api.js';
 import { SessionManager } from './session.js';
 import {
@@ -18,6 +19,7 @@ const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
 const LAST_SELECTED_CREDENTIALS_MAX_RECORDS = 100;
 const MAX_VISIBLE_EMAIL_SUGGESTIONS = 8;
 const CONTENT_SCRIPT_FILES = [
+  'lib/site-scope.js',
   'content/heuristics.js',
   'content/overlay.js',
   'content/detector.js',
@@ -38,6 +40,7 @@ const AUTH_REQUIRED_TYPES = new Set([
   'CHECK_CREDENTIALS',
   'GET_CREDENTIAL_FOR_FILL',
   'GET_CREDENTIAL_FOR_AUTOFILL',
+  'LIST_ADDRESSES_FOR_FILL',
   'REMEMBER_SELECTED_CREDENTIAL',
   'FORM_SUBMITTED',
   'CHECK_PENDING_CREDENTIALS',
@@ -49,6 +52,7 @@ const CONTENT_SAFE_MESSAGE_TYPES = new Set([
   'CHECK_CREDENTIALS',
   'GET_CREDENTIAL_FOR_FILL',
   'GET_CREDENTIAL_FOR_AUTOFILL',
+  'LIST_ADDRESSES_FOR_FILL',
   'GET_EMAIL_SUGGESTIONS',
   'PENDING_USERNAME',
   'GET_PENDING_USERNAME',
@@ -266,7 +270,7 @@ async function writeLastSelectedCredentials(records) {
 }
 
 async function getLastSelectedCredential(domain) {
-  const cleanDomain = stripCommonWwwPrefix(domain);
+  const cleanDomain = normalizeDomain(domain).replace(/^www\./, '');
   if (!cleanDomain) return null;
 
   const records = await readLastSelectedCredentials();
@@ -293,7 +297,7 @@ async function rememberSelectedCredentialForPage(payload, sender) {
   }
 
   const domain = getDomainFromUrl(pageUrl);
-  const selectionDomain = stripCommonWwwPrefix(domain);
+  const selectionDomain = normalizeDomain(domain).replace(/^www\./, '');
   const selectedId = String(payload?.id || '').trim();
   if (!domain || !selectionDomain || !selectedId) {
     return false;
@@ -480,6 +484,23 @@ function normalizeVaultItemType(value) {
   return itemType;
 }
 
+function normalizeAddressForFill(item) {
+  const payload = item?.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload
+    : {};
+
+  return {
+    id: String(item?.id || ''),
+    label: String(payload.label || '').trim(),
+    full_name: String(payload.full_name || '').trim(),
+    line1: String(payload.line1 || '').trim(),
+    line2: String(payload.line2 || '').trim(),
+    city: String(payload.city || '').trim(),
+    postal_code: String(payload.postal_code || '').trim(),
+    country: String(payload.country || '').trim(),
+  };
+}
+
 function parseUrl(value) {
   try {
     return new URL(value);
@@ -489,52 +510,15 @@ function parseUrl(value) {
 }
 
 function parseUrlWithDefaultScheme(value) {
-  const direct = parseUrl(value);
-  if (direct) return direct;
-
-  const normalized = String(value || '').trim();
-  if (!normalized) return null;
-  return parseUrl(`https://${normalized}`);
+  return YurrrSiteScope.parse(value);
 }
 
 function normalizeHostname(hostname) {
-  return String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
-}
-
-function isPrivateIPv4(hostname) {
-  const parts = normalizeHostname(hostname).split('.');
-  if (parts.length !== 4) return false;
-  const nums = parts.map((part) => Number.parseInt(part, 10));
-  if (nums.some((num, idx) => !Number.isInteger(num) || String(num) !== parts[idx] || num < 0 || num > 255)) {
-    return false;
-  }
-
-  return (
-    nums[0] === 10 ||
-    nums[0] === 127 ||
-    (nums[0] === 172 && nums[1] >= 16 && nums[1] <= 31) ||
-    (nums[0] === 192 && nums[1] === 168) ||
-    (nums[0] === 169 && nums[1] === 254)
-  );
-}
-
-function isPrivateIPv6(hostname) {
-  const host = normalizeHostname(hostname);
-  return (
-    host === '::1' ||
-    /^f[cd][0-9a-f]*:/i.test(host) ||
-    /^fe80:/i.test(host)
-  );
+  return String(hostname || '').replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
 }
 
 function isHttpDevHost(hostname) {
-  const host = normalizeHostname(hostname);
-  return (
-    host === 'localhost' ||
-    host.endsWith('.localhost') ||
-    isPrivateIPv4(host) ||
-    isPrivateIPv6(host)
-  );
+  return YurrrSiteScope.isLocalHost(hostname);
 }
 
 function isCredentialPageAllowed(pageUrl) {
@@ -571,7 +555,11 @@ function isCredentialAllowedForPage(credential, pageUrl) {
     return false;
   }
 
-  const credentialUrl = parseUrlWithDefaultScheme(credential?.website_url);
+  const credentialUrl = YurrrSiteScope.parse(credential?.website_url);
+  if (YurrrSiteScope.isLocalHost(page.hostname) &&
+      (!credentialUrl || YurrrSiteScope.key(page.href) !== YurrrSiteScope.key(credentialUrl.href))) {
+    return false;
+  }
   if (page.protocol === 'http:' && credentialUrl?.protocol === 'https:') {
     return false;
   }
@@ -625,8 +613,7 @@ function getMessagePageUrl(payload, sender) {
 }
 
 function getDomainFromUrl(url, fallback = '') {
-  const parsed = parseUrl(url);
-  return normalizeDomain(parsed?.hostname || fallback);
+  return YurrrSiteScope.key(url) || normalizeDomain(fallback);
 }
 
 function getSenderFrameKey(sender) {
@@ -649,7 +636,8 @@ function getSafeCredentialUrlForPage(candidateUrl, pageUrl) {
   if (
     candidate &&
     isCredentialPageAllowed(candidate.href) &&
-    isSameCredentialHost(page.hostname, candidate.hostname)
+    isSameCredentialHost(page.hostname, candidate.hostname) &&
+    (!YurrrSiteScope.isLocalHost(page.hostname) || YurrrSiteScope.key(page.href) === YurrrSiteScope.key(candidate.href))
   ) {
     return candidate.href;
   }
@@ -738,6 +726,7 @@ async function setPendingCredentials(payload, sender) {
     username: String(payload.username || '').trim(),
     password,
     pageUrl: payload.pageUrl || payload.url || '',
+    isPasswordChange: payload.isPasswordChange === true,
     promptReady: payload.promptReady === true,
     frameKey: getSenderFrameKey(sender),
     expiresAt: Date.now() + PENDING_CREDENTIALS_TTL_MS,
@@ -796,17 +785,26 @@ async function compareExistingCredentialPassword(entry, pageUrl, password) {
   };
 }
 
-async function getCredentialSaveDecision(existing, pageUrl, username, password) {
+async function getCredentialSaveDecision(existing, pageUrl, username, password, options = {}) {
   const normalizedUsername = normalizeUsername(username);
   const candidates = existing.filter((entry) => isCredentialAllowedForPage(entry, pageUrl));
+  const preferSingleExistingForUpdate = options.preferSingleExistingForUpdate === true;
 
   if (normalizedUsername) {
     const match = candidates.find((entry) => normalizeUsername(entry.username) === normalizedUsername);
-    if (!match) {
-      return { action: 'create' };
+    if (match) {
+      return await compareExistingCredentialPassword(match, pageUrl, password);
     }
 
-    return await compareExistingCredentialPassword(match, pageUrl, password);
+    if (preferSingleExistingForUpdate && candidates.length === 1) {
+      const decision = await compareExistingCredentialPassword(candidates[0], pageUrl, password);
+      if (decision.action === 'update') {
+        return { ...decision, requiresConfirmation: true };
+      }
+      return decision;
+    }
+
+    return { action: 'create' };
   }
 
   if (candidates.length === 1) {
@@ -1058,6 +1056,33 @@ async function handleMessage(message, sender) {
       return { credential: await getCredentialForPageById(payload.id, pageUrl) };
     }
 
+    case 'LIST_ADDRESSES_FOR_FILL': {
+      if (!(await session.isUnlocked())) {
+        return { addresses: [] };
+      }
+
+      const pageUrl = getMessagePageUrl(payload, sender);
+      if (payload?.userGesture !== true || !isCredentialPageAllowed(pageUrl)) {
+        return { addresses: [] };
+      }
+
+      await session.resetAutoLock();
+      const items = await api.listVaultItems('address');
+      const addresses = items
+        .map((item) => normalizeAddressForFill(item))
+        .filter((address) => (
+          address.full_name ||
+          address.line1 ||
+          address.line2 ||
+          address.city ||
+          address.postal_code ||
+          address.country
+        ))
+        .slice(0, 50);
+
+      return { addresses };
+    }
+
     case 'GET_EMAIL_SUGGESTIONS': {
       const pageUrl = getMessagePageUrl(payload, sender);
       const emails = await getEmailSuggestionsForPage(pageUrl);
@@ -1150,7 +1175,9 @@ async function handleMessage(message, sender) {
       await session.resetAutoLock();
       const username = pending.username || await getPendingUsername(domain) || '';
       const existing = await api.listEntries(domain);
-      const decision = await getCredentialSaveDecision(existing, pageUrl, username, pending.password);
+      const decision = await getCredentialSaveDecision(existing, pageUrl, username, pending.password, {
+        preferSingleExistingForUpdate: pending.isPasswordChange === true,
+      });
 
       if (decision.action === 'unchanged' || decision.action === 'missing_username') {
         await clearPendingUsername(domain);
@@ -1222,6 +1249,7 @@ async function handleMessage(message, sender) {
       const effectiveUsername = String(username || rememberedUsername || '').trim();
       const confirmUpdate = payload.confirmUpdate === true;
       const requestedEntryId = String(payload.entryId || '');
+      const preferSingleExistingForUpdate = pending?.isPasswordChange === true;
 
       if (confirmUpdate && requestedEntryId) {
         const match = existing.find((entry) => String(entry.id) === requestedEntryId);
@@ -1247,7 +1275,9 @@ async function handleMessage(message, sender) {
         return { saved: true, updated: true };
       }
 
-      const decision = await getCredentialSaveDecision(existing, pageUrl, effectiveUsername, password);
+      const decision = await getCredentialSaveDecision(existing, pageUrl, effectiveUsername, password, {
+        preferSingleExistingForUpdate,
+      });
       if (decision.action === 'unchanged') {
         await clearPendingUsername(domain);
         await clearPendingCredentials();
@@ -1256,6 +1286,16 @@ async function handleMessage(message, sender) {
 
       if (effectiveUsername) {
         if (decision.action === 'update' && decision.entryId) {
+          if (decision.requiresConfirmation && !confirmUpdate) {
+            return {
+              saved: false,
+              reason: 'confirm_update',
+              entryId: decision.entryId,
+              username: decision.username,
+              message: buildSavePromptMessage(decision, domain, decision.username),
+            };
+          }
+
           await api.updateEntry(decision.entryId, { password });
           await session.clearCache();
           await clearPendingUsername(domain);

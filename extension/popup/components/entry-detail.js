@@ -54,7 +54,9 @@ const EntryDetail = {
         } else {
           text = el.textContent;
         }
-        navigator.clipboard.writeText(text).then(() => showToast('Copied!'));
+        navigator.clipboard.writeText(text)
+          .then(() => showToast('Copied!'))
+          .catch((err) => showToast(`Copy failed: ${err.message}`, 'error'));
       });
     });
 
@@ -66,19 +68,22 @@ const EntryDetail = {
   },
 
   async show(entryId) {
+    const generation = ++window.VaultSections.renderGeneration;
     this.passwordVisible = false;
     this.stopResumeTimer();
 
     try {
       const entry = await sendMessage('GET_ENTRY', { id: entryId });
+      if (generation !== window.VaultSections.renderGeneration) return false;
       this.currentEntry = entry;
 
-      this.domainEl.textContent = entry.website_domain;
+      this.domainEl.textContent = YurrrSiteScope.label(entry);
       this.faviconEl.innerHTML = '';
       this.loadDetailFavicon(entry);
       this.urlEl.textContent = entry.website_url;
       this.usernameEl.textContent = entry.username;
       this.passwordEl.textContent = '\u2022'.repeat(12);
+      this.passwordEl.classList.add('password-masked');
       this.togglePwBtn.innerHTML = window.getPopupIcon ? window.getPopupIcon('eye', 'icon-sm') : '';
       this.togglePwBtn.title = 'Show password';
       this.togglePwBtn.setAttribute('aria-label', 'Show password');
@@ -94,6 +99,7 @@ const EntryDetail = {
       this.screen.classList.remove('hidden');
       window.animatePopupScreen?.(this.screen, 'forward');
       this.startResumeTimer();
+      document.getElementById('back-from-detail').focus();
       return true;
     } catch (err) {
       if (isSessionLostError(err)) return false;
@@ -111,6 +117,11 @@ const EntryDetail = {
     this.togglePwBtn.title = 'Show password';
     this.togglePwBtn.setAttribute('aria-label', 'Show password');
     this.currentEntry = null;
+    this.domainEl.textContent = '';
+    this.urlEl.textContent = '';
+    this.usernameEl.textContent = '';
+    this.notesEl.textContent = '';
+    this.faviconEl.replaceChildren();
     if (clearResume) {
       this.clearResumeState();
     } else {
@@ -173,8 +184,10 @@ const EntryDetail = {
 
   async persistResumeState() {
     if (!this.currentEntry?.id || this.screen.classList.contains('hidden')) return;
+    const entry = this.currentEntry;
 
     const timeoutMs = await this.getResumeTimeoutMs();
+    if (this.currentEntry !== entry || this.screen.classList.contains('hidden')) return;
     const store = this.getResumeStore();
     if (timeoutMs <= 0) {
       await store.remove(DETAIL_RESUME_STATE_KEY);
