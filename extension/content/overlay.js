@@ -244,12 +244,11 @@ const YurrrOverlay = {
     nativeSetter.call(target, pw);
     target.dispatchEvent(new Event('input', { bubbles: true }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
-    this.markGeneratedPassword(target, pw);
 
     // Also fill confirm password if present
-    const form = target.closest('form');
+    const form = YurrrHeuristics.getForm(target);
     if (form) {
-      const pwFields = form.querySelectorAll('input[type="password"]');
+      const pwFields = YurrrHeuristics.getVisiblePasswordFields(form);
       const isPasswordChange = typeof YurrrHeuristics !== 'undefined'
         && YurrrHeuristics.isPasswordChangeForm(form);
       const currentPasswordField = isPasswordChange
@@ -260,6 +259,7 @@ const YurrrOverlay = {
         if (field === target) {
           continue;
         }
+        if (YurrrHeuristics.isCurrentPasswordField(field)) continue;
 
         if (isPasswordChange) {
           const isCurrentPassword = field === currentPasswordField
@@ -272,29 +272,10 @@ const YurrrOverlay = {
         nativeSetter.call(field, pw);
         field.dispatchEvent(new Event('input', { bubbles: true }));
         field.dispatchEvent(new Event('change', { bubbles: true }));
-        this.markGeneratedPassword(field, pw);
       }
     }
 
     this.hide();
-  },
-
-  markGeneratedPassword(field, password) {
-    if (!field || !password) return;
-
-    const store = globalThis.YurrrGeneratedPasswordStore || new WeakMap();
-    globalThis.YurrrGeneratedPasswordStore = store;
-
-    const value = {
-      password,
-      generatedAt: Date.now(),
-    };
-    store.set(field, value);
-
-    const form = field.closest('form');
-    if (form) {
-      store.set(form, value);
-    }
   },
 
   destroy() {

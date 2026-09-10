@@ -5,10 +5,41 @@ const YurrrHeuristics = {
   searchKeywordPattern: /\b(search|query|lookup|find|suche|suchen|durchsuchen)\b/i,
   inputSelector: 'input[type="text"], input[type="email"], input[type="tel"], input:not([type])',
   addressFieldSelector: 'input[type="text"], input[type="tel"], input:not([type]), textarea, select',
+  knownPasswordFields: new WeakSet(),
+
+  getForm(field) {
+    return field?.form || field?.closest('form, [role="form"]') || null;
+  },
+
+  getInputs(scope = document) {
+    return scope.elements
+      ? Array.from(scope.elements).filter((field) => field.tagName === 'INPUT')
+      : Array.from(scope.querySelectorAll('input'));
+  },
+
+  isPasswordField(field) {
+    if (!field || String(field.tagName || '').toUpperCase() !== 'INPUT') return false;
+    const type = (field.type || '').toLowerCase();
+    if (!['password', 'text', ''].includes(type)) return false;
+    const tokens = this.getAutocompleteTokens(field);
+    if (tokens.some((token) => ['username', 'email', 'one-time-code', 'cc-csc', 'cc-number'].includes(token))) {
+      this.knownPasswordFields.delete(field);
+      return false;
+    }
+    if (type === 'password' || tokens.some((token) =>
+      token === 'new-password' || token === 'current-password')) {
+      this.knownPasswordFields.add(field);
+    }
+    return this.knownPasswordFields.has(field);
+  },
+
+  getPasswordFields(scope = document) {
+    return this.getInputs(scope).filter((field) => this.isPasswordField(field));
+  },
 
   // Find standalone username/email fields when no password field is present
-  findStandaloneUsernameFields() {
-    const allInputs = Array.from(document.querySelectorAll(this.inputSelector));
+  findStandaloneUsernameFields(scope = document) {
+    const allInputs = this.getInputs(scope).filter((field) => field.matches(this.inputSelector));
     const scored = [];
 
     for (const el of allInputs) {
@@ -24,18 +55,18 @@ const YurrrHeuristics = {
   },
 
   // Find the username/email field associated with a password field
-  findUsernameField(passwordField) {
+  findUsernameField(passwordField, submissionScope = null) {
     if (!passwordField) return null;
-    const form = passwordField.closest('form');
-    const scope = form || document;
-    const inputs = Array.from(scope.querySelectorAll(this.inputSelector));
-    const allInputs = Array.from(scope.querySelectorAll('input'));
+    const form = this.getForm(passwordField);
+    const scope = submissionScope || form || document;
+    const allInputs = this.getInputs(scope);
+    const inputs = allInputs.filter((field) => field.matches(this.inputSelector));
     const pwIndex = allInputs.indexOf(passwordField);
     const candidates = [];
 
     for (const el of inputs) {
       if (!this.isEligibleInput(el)) continue;
-      if (form && el.closest('form') !== form) continue;
+      if (this.getForm(el) !== form) continue;
       if (el === passwordField) continue;
 
       let score = this.scoreUsernameCandidate(el);
@@ -61,7 +92,7 @@ const YurrrHeuristics = {
 
   findRegistrationEmailField(form, passwordField = null) {
     const scope = form || document;
-    const fields = Array.from(scope.querySelectorAll(this.inputSelector));
+    const fields = this.getInputs(scope).filter((field) => field.matches(this.inputSelector));
     let best = null;
     let bestScore = -1;
 
@@ -71,7 +102,7 @@ const YurrrHeuristics = {
       if (this.isLikelyEmailField(el)) score += 5;
 
       if (passwordField && form) {
-        const allInputs = Array.from(form.querySelectorAll('input'));
+        const allInputs = this.getInputs(form);
         const pwIndex = allInputs.indexOf(passwordField);
         const idx = allInputs.indexOf(el);
         if (pwIndex !== -1 && idx !== -1 && idx < pwIndex) {
@@ -177,14 +208,14 @@ const YurrrHeuristics = {
     if (this.isHidden(el)) return false;
     if (el.disabled || el.readOnly) return false;
     const type = (el.type || '').toLowerCase();
-    if (type === 'hidden' || type === 'password') return false;
+    if (type === 'hidden' || this.isPasswordField(el)) return false;
     return true;
   },
 
   isEligibleAddressField(el) {
     if (!el) return false;
     if (this.isHidden(el)) return false;
-    if (el.disabled || el.readOnly) return false;
+    if (el.disabled || el.readOnly || this.isPasswordField(el)) return false;
 
     const tagName = String(el.tagName || '').toLowerCase();
     if (tagName === 'textarea' || tagName === 'select') return true;
@@ -264,34 +295,43 @@ const YurrrHeuristics = {
 
   getVisiblePasswordFields(form) {
     if (!form) return [];
-    return Array.from(form.querySelectorAll('input[type="password"]'))
+    return this.getPasswordFields(form)
       .filter((field) => !this.isHidden(field) && !field.disabled && !field.readOnly);
   },
 
+  getPasswordFieldMeta(field) {
+    return this.getFieldMeta(field).replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ');
+  },
+
   isCurrentPasswordField(field) {
-    if (!field || (field.type || '').toLowerCase() !== 'password') return false;
+    if (!this.isPasswordField(field)) return false;
 
     const autocomplete = (field.autocomplete || '').toLowerCase();
     if (autocomplete.split(/\s+/).includes('current-password')) return true;
 
-    const meta = this.getFieldMeta(field);
+    const meta = this.getPasswordFieldMeta(field);
     return (
-      /(current|old|existing)\s*(password|passcode|pass|pwd)/i.test(meta) ||
-      /(password|passcode|pass|pwd)\s*(current|old|existing)/i.test(meta)
+      /(current|old|existing|aktuell(?:es)?|alt(?:es)?|bisherig(?:es)?)\s*(password|passwort|passcode|pass|pwd)/i.test(meta) ||
+      /(password|passwort|passcode|pass|pwd)\s*(current|old|existing|aktuell|alt|bisherig)/i.test(meta)
     );
   },
 
   isNewPasswordField(field) {
-    if (!field || (field.type || '').toLowerCase() !== 'password') return false;
+    if (!this.isPasswordField(field)) return false;
 
     const autocomplete = (field.autocomplete || '').toLowerCase();
     if (autocomplete.split(/\s+/).includes('new-password')) return true;
 
-    const meta = this.getFieldMeta(field);
+    const meta = this.getPasswordFieldMeta(field);
     return (
-      /(new|confirm|confirmation|repeat|retype|verify)\s*(password|passcode|pass|pwd)/i.test(meta) ||
-      /(password|passcode|pass|pwd)\s*(new|confirm|confirmation|repeat|retype|verify)/i.test(meta)
+      /(new|neu(?:es)?|confirm|confirmation|repeat|retype|verify)\s*(password|passwort|passcode|pass|pwd)/i.test(meta) ||
+      /(password|passwort|passcode|pass|pwd)\s*(new|neu|confirm|confirmation|repeat|retype|verify|wiederholen|best[aä]tigen)/i.test(meta)
     );
+  },
+
+  isConfirmationPasswordField(field) {
+    return this.isPasswordField(field) &&
+      /(confirm|confirmation|repeat|retype|verify|wiederhol|best[aä]tig)/i.test(this.getPasswordFieldMeta(field));
   },
 
   findCurrentPasswordField(form) {

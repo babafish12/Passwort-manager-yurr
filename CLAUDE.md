@@ -32,15 +32,16 @@ Base: `/api/v1` (defined in `server/src/router.rs`)
 - Master password → Argon2id (16MB, 2 iterations, 2 threads) → AES-256-GCM encryption key
 - Key held in server RAM only during active sessions, never on disk
 - Each entry encrypted with random 12-byte nonce
-- JWT tokens: 1 hour expiry, 15 min inactivity timeout
+- Normal server sessions: 24 hour JWT expiry, 240 minute inactivity timeout by default (environment configurable); `never` mode disables both deadlines
+- Pending saves: at most five minutes in trusted `chrome.storage.session` memory, scoped to tab/frame/site and cleared on lock; never local/sync storage
 - Rate limiting on login: 5 req/s burst
 - IMPORTANT: Never commit `vault.db`, `certs/`, or `.pem` files
 
 ## Extension Conventions
 
-- All JS uses ES modules (`"type": "module"` in manifest)
+- Background scripts use ES modules (`"type": "module"` in manifest); content scripts and most UI scripts are classic scripts
 - Content scripts use Shadow DOM for style isolation
-- Session modes: `ephemeral` (lock on browser restart) or `persistent` (lock on system idle)
+- Session modes: `ephemeral` (browser restart), `persistent` (system lock), `inactivity`, and `never`
 - Constants centralized in `extension/lib/constants.js`
 
 ## Deployment
@@ -56,4 +57,4 @@ Base: `/api/v1` (defined in `server/src/router.rs`)
 - Self-signed TLS: browser must accept the cert before extension can connect
 - Extension does cert warmup on popup open to handle browser restart scenarios
 - CSV import parser handles RFC 4180 (quoted fields, commas in passwords)
-- Favicon fetching: Google API first, direct `/favicon.ico` fallback
+- Favicons: browser cache, direct website discovery, then server cache; server-side website fetching is opt-in

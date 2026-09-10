@@ -18,13 +18,20 @@ session.popupCache.onChange = (change) => {
   chrome.runtime.sendMessage({ type: 'POPUP_CACHE_CHANGED', ...change }).catch(() => {});
 };
 const faviconCache = new Map();
-let pendingCredentials = null;
+let pendingStateQueue = Promise.resolve();
+let pendingMessageQueue = Promise.resolve();
+const PENDING_WRITE_TYPES = new Set([
+  'PENDING_USERNAME', 'CLEAR_PENDING_USERNAME', 'PENDING_CREDENTIALS',
+  'MARK_PENDING_CREDENTIALS_READY', 'CLEAR_PENDING_CREDENTIALS',
+]);
 session.onLock = () => {
   faviconCache.clear();
   return clearAllPendingState().catch(() => {});
 };
 const PENDING_CREDENTIALS_TTL_MS = 5 * 60 * 1000;
 const PENDING_USERNAME_TTL_MS = 10 * 60 * 1000;
+const PENDING_CREDENTIALS_ALARM = 'pending-credentials-expiry';
+const MAX_PENDING_RECORDS = 100;
 const LAST_SELECTED_CREDENTIALS_MAX_RECORDS = 100;
 const MAX_VISIBLE_EMAIL_SUGGESTIONS = 8;
 const CONTENT_SCRIPT_FILES = [
@@ -71,6 +78,7 @@ const CONTENT_SAFE_MESSAGE_TYPES = new Set([
   'CLEAR_PENDING_USERNAME',
   'REMEMBER_SELECTED_CREDENTIAL',
   'PENDING_CREDENTIALS',
+  'MARK_PENDING_CREDENTIALS_READY',
   'CHECK_PENDING_CREDENTIALS',
   'CLEAR_PENDING_CREDENTIALS',
   'FORM_SUBMITTED',
@@ -111,6 +119,7 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       tokenChange.oldValue !== tokenChange.newValue) {
     if (api.token === tokenChange.oldValue) api.clearToken();
     void session.clearCache();
+    void clearAllPendingState();
   }
   if (areaName !== 'local' || !changes[STORAGE_KEY_SERVER_URL]) {
     return;
@@ -131,6 +140,10 @@ async function handleServerUrlChange() {
 
 // Auto-lock alarm handler
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === PENDING_CREDENTIALS_ALARM) {
+    await startupReady;
+    await updatePendingRecords(STORAGE_KEY_PENDING_CREDENTIALS, () => {});
+  }
   if (alarm.name === POPUP_CACHE_ALARM) {
     await startupReady;
     await session.popupCache.expire();
@@ -139,6 +152,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await session.lock();
     faviconCache.clear();
     await clearAllPendingState();
+  }
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await startupReady;
+  await pendingMessageQueue;
+  for (const key of [STORAGE_KEY_PENDING_CREDENTIALS, STORAGE_KEY_PENDING_USERNAMES]) {
+    await updatePendingRecords(key, (records) => {
+      for (const recordKey of Object.keys(records)) {
+        if (recordKey.startsWith(`${tabId}:`)) delete records[recordKey];
+      }
+    }).catch(() => {});
   }
 });
 
@@ -668,117 +693,108 @@ function getSafeCredentialUrlForPage(candidateUrl, pageUrl) {
   return page.href;
 }
 
-async function writePendingUsernames(usernames) {
-  if (Object.keys(usernames).length === 0) {
-    await chrome.storage.session.remove(STORAGE_KEY_PENDING_USERNAMES);
-    return;
-  }
-
-  await chrome.storage.session.set({ [STORAGE_KEY_PENDING_USERNAMES]: usernames });
+function pendingRecordKey(domain, sender) {
+  return `${getSenderFrameKey(sender) || 'extension'}:${normalizeDomain(domain)}`;
 }
 
-async function readPendingUsernames() {
-  const result = await chrome.storage.session.get(STORAGE_KEY_PENDING_USERNAMES);
-  const raw = result[STORAGE_KEY_PENDING_USERNAMES];
-  const rawIsObject = raw && typeof raw === 'object' && !Array.isArray(raw);
-  const usernames = rawIsObject ? { ...raw } : {};
-  const now = Date.now();
-  let changed = Boolean(raw) && !rawIsObject;
-
-  for (const [domain, value] of Object.entries(usernames)) {
-    if (
-      !value ||
-      typeof value !== 'object' ||
-      typeof value.expiresAt !== 'number' ||
-      value.expiresAt <= now ||
-      !String(value.username || '').trim()
-    ) {
-      delete usernames[domain];
-      changed = true;
+// Serialize storage read/modify/write operations so concurrent tabs and lock cannot
+// overwrite one another. Session storage survives worker suspension, stays in RAM,
+// and is restricted to trusted extension contexts during startup.
+function updatePendingRecords(storageKey, update) {
+  const generation = api.tokenGeneration;
+  const token = api.token;
+  const serverUrl = api.serverUrl;
+  const operation = pendingStateQueue.then(async () => {
+    const result = await chrome.storage.session.get(storageKey);
+    if (generation !== api.tokenGeneration) return null;
+    const stored = result[storageKey];
+    const records = stored?.token === token && stored?.serverUrl === serverUrl
+      ? { ...stored.records }
+      : {};
+    for (const [key, record] of Object.entries(records)) {
+      if (!record || !Number.isFinite(record.expiresAt) || record.expiresAt <= Date.now()) {
+        delete records[key];
+      }
     }
-  }
-
-  if (changed) {
-    await writePendingUsernames(usernames);
-  }
-
-  return usernames;
+    const value = update(records);
+    const entries = Object.entries(records).sort(([, a], [, b]) => b.expiresAt - a.expiresAt)
+      .slice(0, MAX_PENDING_RECORDS);
+    if (entries.length) {
+      await chrome.storage.session.set({
+        [storageKey]: { token, serverUrl, records: Object.fromEntries(entries) },
+      });
+    } else {
+      await chrome.storage.session.remove(storageKey);
+    }
+    if (storageKey === STORAGE_KEY_PENDING_CREDENTIALS) {
+      if (entries.length) {
+        await chrome.alarms.create(PENDING_CREDENTIALS_ALARM, {
+          when: Math.min(...entries.map(([, record]) => record.expiresAt)),
+        });
+      } else {
+        await chrome.alarms.clear(PENDING_CREDENTIALS_ALARM);
+      }
+    }
+    return generation === api.tokenGeneration ? value : null;
+  });
+  pendingStateQueue = operation.catch(() => {});
+  return operation;
 }
 
-async function setPendingUsername(domain, url, username) {
+async function setPendingUsername(domain, url, username, sender = null) {
   const cleanDomain = normalizeDomain(domain);
   const cleanUsername = String(username || '').trim();
   if (!cleanDomain || !cleanUsername) return false;
-
-  const usernames = await readPendingUsernames();
-  usernames[cleanDomain] = {
-    username: cleanUsername,
-    url: url || null,
-    expiresAt: Date.now() + PENDING_USERNAME_TTL_MS,
-  };
-  await writePendingUsernames(usernames);
-  return true;
+  return updatePendingRecords(STORAGE_KEY_PENDING_USERNAMES, (records) => {
+    records[pendingRecordKey(cleanDomain, sender)] = {
+      username: cleanUsername, url: url || null,
+      expiresAt: Date.now() + PENDING_USERNAME_TTL_MS,
+    };
+    return true;
+  });
 }
 
-async function getPendingUsername(domain) {
-  const cleanDomain = normalizeDomain(domain);
-  if (!cleanDomain) return '';
-
-  const usernames = await readPendingUsernames();
-  return usernames[cleanDomain]?.username || '';
+async function getPendingUsername(domain, sender = null) {
+  return await updatePendingRecords(STORAGE_KEY_PENDING_USERNAMES, (records) =>
+    records[pendingRecordKey(domain, sender)]?.username || '') || '';
 }
 
-async function clearPendingUsername(domain) {
-  const cleanDomain = normalizeDomain(domain);
-  if (!cleanDomain) return;
-
-  const usernames = await readPendingUsernames();
-  if (!usernames[cleanDomain]) return;
-  delete usernames[cleanDomain];
-  await writePendingUsernames(usernames);
+async function clearPendingUsername(domain, sender = null) {
+  await updatePendingRecords(STORAGE_KEY_PENDING_USERNAMES, (records) => {
+    delete records[pendingRecordKey(domain, sender)];
+  });
 }
 
 async function setPendingCredentials(payload, sender) {
   const domain = getDomainFromUrl(payload?.url);
   const password = String(payload?.password || '');
-  if (!domain || !password) return false;
-
-  pendingCredentials = {
-    url: payload.url,
-    domain,
-    username: String(payload.username || '').trim(),
-    password,
-    pageUrl: payload.pageUrl || payload.url || '',
-    isPasswordChange: payload.isPasswordChange === true,
-    promptReady: payload.promptReady === true,
-    frameKey: getSenderFrameKey(sender),
-    expiresAt: Date.now() + PENDING_CREDENTIALS_TTL_MS,
-  };
-  return true;
+  const submissionId = String(payload?.submissionId || '');
+  if (!domain || !password || !submissionId) return false;
+  return updatePendingRecords(STORAGE_KEY_PENDING_CREDENTIALS, (records) => {
+    records[pendingRecordKey(domain, sender)] = {
+      url: payload.url, domain,
+      username: String(payload.username || '').trim(), password, submissionId,
+      pageUrl: payload.pageUrl || payload.url || '',
+      isPasswordChange: payload.isPasswordChange === true,
+      promptReady: false,
+      expiresAt: Date.now() + PENDING_CREDENTIALS_TTL_MS,
+    };
+    return true;
+  });
 }
 
 async function getPendingCredentials(domain, sender = null) {
-  const cleanDomain = normalizeDomain(domain);
-  if (!cleanDomain) return null;
+  return updatePendingRecords(STORAGE_KEY_PENDING_CREDENTIALS, (records) =>
+    records[pendingRecordKey(domain, sender)] || null);
+}
 
-  const pending = pendingCredentials;
-  if (!pending || typeof pending !== 'object') return null;
-
-  if (typeof pending.expiresAt !== 'number' || pending.expiresAt <= Date.now()) {
-    pendingCredentials = null;
-    return null;
-  }
-
-  if (normalizeDomain(pending.domain) !== cleanDomain) {
-    return null;
-  }
-
-  const frameKey = getSenderFrameKey(sender);
-  if (pending.frameKey && frameKey && pending.frameKey !== frameKey) {
-    return null;
-  }
-
-  return pending;
+async function markPendingCredentialsReady(domain, sender, submissionId) {
+  return updatePendingRecords(STORAGE_KEY_PENDING_CREDENTIALS, (records) => {
+    const record = records[pendingRecordKey(domain, sender)];
+    if (!record || record.submissionId !== submissionId) return false;
+    record.promptReady = true;
+    return true;
+  });
 }
 
 function pendingCredentialMatchesSubmission(pending, pageUrl, password) {
@@ -809,15 +825,19 @@ async function compareExistingCredentialPassword(entry, pageUrl, password) {
 }
 
 async function getCredentialSaveDecision(existing, pageUrl, username, password, options = {}) {
+  const typedUsername = String(username || '').trim();
   const normalizedUsername = normalizeUsername(username);
   const candidates = existing.filter((entry) => isCredentialAllowedForPage(entry, pageUrl));
   const preferSingleExistingForUpdate = options.preferSingleExistingForUpdate === true;
 
   if (normalizedUsername) {
-    const match = candidates.find((entry) => normalizeUsername(entry.username) === normalizedUsername);
+    const exactMatch = candidates.find((entry) => String(entry.username || '').trim() === typedUsername);
+    const normalizedMatches = candidates.filter((entry) => normalizeUsername(entry.username) === normalizedUsername);
+    const match = exactMatch || (normalizedMatches.length === 1 ? normalizedMatches[0] : null);
     if (match) {
       return await compareExistingCredentialPassword(match, pageUrl, password);
     }
+    if (normalizedMatches.length > 1) return { action: 'ambiguous_username' };
 
     if (preferSingleExistingForUpdate && candidates.length === 1) {
       const decision = await compareExistingCredentialPassword(candidates[0], pageUrl, password);
@@ -845,17 +865,23 @@ function buildSavePromptMessage(decision, domain, username) {
   return `Save password for ${domain}?`;
 }
 
-async function clearPendingCredentials() {
-  pendingCredentials = null;
-  await chrome.storage.session.remove(STORAGE_KEY_PENDING_CREDENTIALS);
+async function clearPendingCredentials(domain, sender, submissionId) {
+  await updatePendingRecords(STORAGE_KEY_PENDING_CREDENTIALS, (records) => {
+    const key = pendingRecordKey(domain, sender);
+    if (records[key]?.submissionId === submissionId) delete records[key];
+  });
 }
 
 async function clearAllPendingState() {
-  pendingCredentials = null;
-  await chrome.storage.session.remove([
-    STORAGE_KEY_PENDING_CREDENTIALS,
-    STORAGE_KEY_PENDING_USERNAMES,
-  ]);
+  const clearing = pendingStateQueue.then(async () => {
+    await chrome.storage.session.remove([
+      STORAGE_KEY_PENDING_CREDENTIALS,
+      STORAGE_KEY_PENDING_USERNAMES,
+    ]);
+    await chrome.alarms.clear(PENDING_CREDENTIALS_ALARM);
+  });
+  pendingStateQueue = clearing.catch(() => {});
+  await clearing;
 }
 
 async function normalizeAndHandleError(messageType, err) {
@@ -887,6 +913,22 @@ async function normalizeAndHandleError(messageType, err) {
 }
 
 async function handleMessage(message, sender) {
+  await startupReady;
+  if (PENDING_WRITE_TYPES.has(message?.type)) {
+    const generation = api.tokenGeneration;
+    const operation = pendingMessageQueue.then(() => generation === api.tokenGeneration
+      ? dispatchMessage(message, sender)
+      : { stored: false, ready: false });
+    pendingMessageQueue = operation.catch(() => {});
+    return operation;
+  }
+  if (['GET_PENDING_USERNAME', 'CHECK_PENDING_CREDENTIALS', 'FORM_SUBMITTED'].includes(message?.type)) {
+    await pendingMessageQueue;
+  }
+  return dispatchMessage(message, sender);
+}
+
+async function dispatchMessage(message, sender) {
   await startupReady;
 
   const { type, payload = {} } = message || {};
@@ -1063,7 +1105,7 @@ async function handleMessage(message, sender) {
           website_url: entry.website_url,
         }));
 
-      const preferredUsername = normalizeUsername(payload?.preferredUsername || await getPendingUsername(domain));
+      const preferredUsername = normalizeUsername(payload?.preferredUsername || await getPendingUsername(domain, sender));
       const lastSelectedCredential = await getLastSelectedCredential(domain);
       return {
         credentials: sortCredentialsForFill(credentials, preferredUsername, lastSelectedCredential),
@@ -1146,7 +1188,7 @@ async function handleMessage(message, sender) {
       }
       const domain = getDomainFromUrl(pageUrl);
       const url = getSafeCredentialUrlForPage(payload.url, pageUrl);
-      return { stored: await setPendingUsername(domain, url, payload.username) };
+      return { stored: await setPendingUsername(domain, url, payload.username, sender) };
     }
 
     case 'GET_PENDING_USERNAME': {
@@ -1155,7 +1197,7 @@ async function handleMessage(message, sender) {
         return { username: '' };
       }
       const domain = getDomainFromUrl(pageUrl);
-      return { username: await getPendingUsername(domain) };
+      return { username: await getPendingUsername(domain, sender) };
     }
 
     case 'CLEAR_PENDING_USERNAME': {
@@ -1164,16 +1206,17 @@ async function handleMessage(message, sender) {
         if (!isCredentialPageAllowed(pageUrl)) {
           return { cleared: false };
         }
-        await clearPendingUsername(getDomainFromUrl(pageUrl));
+        await clearPendingUsername(getDomainFromUrl(pageUrl), sender);
         return { cleared: true };
       }
 
       const domain = normalizeDomain(payload?.domain);
-      await clearPendingUsername(domain);
+      await clearPendingUsername(domain, sender);
       return { cleared: true };
     }
 
     case 'PENDING_CREDENTIALS': {
+      const generation = api.tokenGeneration;
       if (!(await session.isUnlocked())) {
         return { stored: false };
       }
@@ -1185,18 +1228,26 @@ async function handleMessage(message, sender) {
 
       const credentialUrl = getSafeCredentialUrlForPage(payload.url, pageUrl);
       const domain = getDomainFromUrl(pageUrl);
-      const username = payload.username || await getPendingUsername(domain) || '';
+      const username = payload.username || await getPendingUsername(domain, sender) || '';
+      if (generation !== api.tokenGeneration) return { stored: false };
       return {
         stored: await setPendingCredentials(
           {
             ...payload,
             url: credentialUrl,
+            pageUrl,
             domain,
             username,
           },
           sender
         ),
       };
+    }
+
+    case 'MARK_PENDING_CREDENTIALS_READY': {
+      const pageUrl = getMessagePageUrl(payload, sender);
+      if (!isCredentialPageAllowed(pageUrl)) return { ready: false };
+      return { ready: await markPendingCredentialsReady(getDomainFromUrl(pageUrl), sender, payload.submissionId) };
     }
 
     case 'CHECK_PENDING_CREDENTIALS': {
@@ -1220,15 +1271,17 @@ async function handleMessage(message, sender) {
       }
 
       await session.resetAutoLock();
-      const username = pending.username || await getPendingUsername(domain) || '';
+      const username = pending.username || await getPendingUsername(domain, sender) || '';
       const existing = await api.listEntries(domain);
       const decision = await getCredentialSaveDecision(existing, pageUrl, username, pending.password, {
         preferSingleExistingForUpdate: pending.isPasswordChange === true,
       });
+      const current = await getPendingCredentials(domain, sender);
+      if (current?.submissionId !== pending.submissionId) return { hasPending: false };
 
-      if (decision.action === 'unchanged' || decision.action === 'missing_username') {
-        await clearPendingUsername(domain);
-        await clearPendingCredentials();
+      if (['unchanged', 'missing_username', 'ambiguous_username'].includes(decision.action)) {
+        await clearPendingUsername(domain, sender);
+        await clearPendingCredentials(domain, sender, pending?.submissionId);
         return {
           hasPending: false,
           reason: decision.action,
@@ -1242,6 +1295,7 @@ async function handleMessage(message, sender) {
           domain: pending.domain,
           username,
           password: pending.password,
+          submissionId: pending.submissionId,
           action: decision.action === 'update' ? 'update' : 'save',
           entryId: decision.entryId || null,
           message: buildSavePromptMessage(decision, pending.domain || domain, decision.username || username),
@@ -1250,7 +1304,9 @@ async function handleMessage(message, sender) {
     }
 
     case 'CLEAR_PENDING_CREDENTIALS': {
-      await clearPendingCredentials();
+      const pageUrl = getMessagePageUrl(payload, sender);
+      if (!isCredentialPageAllowed(pageUrl)) return { cleared: false };
+      await clearPendingCredentials(getDomainFromUrl(pageUrl), sender, payload.submissionId);
       return { cleared: true };
     }
 
@@ -1285,14 +1341,15 @@ async function handleMessage(message, sender) {
       const pending = isContentScriptSender(sender)
         ? await getPendingCredentials(domain, sender)
         : null;
-      if (isContentScriptSender(sender) && !pendingCredentialMatchesSubmission(pending, pageUrl, password)) {
+      if (isContentScriptSender(sender) &&
+          (pending?.submissionId !== payload.submissionId || !pendingCredentialMatchesSubmission(pending, pageUrl, password))) {
         return {
           saved: false,
           reason: 'missing_pending_credential',
           message: 'No matching pending password save was found.',
         };
       }
-      const rememberedUsername = await getPendingUsername(domain);
+      const rememberedUsername = await getPendingUsername(domain, sender);
       const effectiveUsername = String(username || rememberedUsername || '').trim();
       const confirmUpdate = payload.confirmUpdate === true;
       const requestedEntryId = String(payload.entryId || '');
@@ -1310,23 +1367,26 @@ async function handleMessage(message, sender) {
 
         const decision = await compareExistingCredentialPassword(match, pageUrl, password);
         if (decision.action === 'unchanged') {
-          await clearPendingUsername(domain);
-          await clearPendingCredentials();
+          await clearPendingUsername(domain, sender);
+          await clearPendingCredentials(domain, sender, pending?.submissionId);
           return { saved: true, unchanged: true };
         }
 
         await session.mutateEntries(() => api.updateEntry(match.id, { password }));
-        await clearPendingUsername(domain);
-        await clearPendingCredentials();
+        await clearPendingUsername(domain, sender);
+        await clearPendingCredentials(domain, sender, pending?.submissionId);
         return { saved: true, updated: true };
       }
 
       const decision = await getCredentialSaveDecision(existing, pageUrl, effectiveUsername, password, {
         preferSingleExistingForUpdate,
       });
+      if (decision.action === 'ambiguous_username') {
+        return { saved: false, reason: decision.action, message: 'Several saved accounts match. Select the exact account in Yurrr to update its password.' };
+      }
       if (decision.action === 'unchanged') {
-        await clearPendingUsername(domain);
-        await clearPendingCredentials();
+        await clearPendingUsername(domain, sender);
+        await clearPendingCredentials(domain, sender, pending?.submissionId);
         return { saved: true, unchanged: true };
       }
 
@@ -1343,14 +1403,14 @@ async function handleMessage(message, sender) {
           }
 
           await session.mutateEntries(() => api.updateEntry(decision.entryId, { password }));
-          await clearPendingUsername(domain);
-          await clearPendingCredentials();
+          await clearPendingUsername(domain, sender);
+          await clearPendingCredentials(domain, sender, pending?.submissionId);
           return { saved: true, updated: true };
         }
 
         await session.mutateEntries(() => api.createEntry({ website_url: url, username: effectiveUsername, password }));
-        await clearPendingUsername(domain);
-        await clearPendingCredentials();
+        await clearPendingUsername(domain, sender);
+        await clearPendingCredentials(domain, sender, pending?.submissionId);
         return { saved: true, updated: false };
       } else {
         if (decision.action === 'update' && decision.entryId) {

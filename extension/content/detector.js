@@ -13,24 +13,31 @@ const YurrrDetector = {
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
   autofilledPasswordFields: new WeakMap(),
-  observedSubmitForms: new WeakSet(),
+  submittingScopes: new WeakSet(),
+  submissionGeneration: 0,
+  saveBannerSubmissionId: null,
   savePromptTimer: null,
   saveBannerCleanup: null,
   pendingPromptReadyCleanup: null,
   EMAIL_SUGGESTIONS_LIST_ID: 'yurrr-email-suggestions-list',
   MAX_VISIBLE_EMAIL_SUGGESTIONS: 8,
-  GENERATED_PASSWORD_PROMPT_DELAY_MS: 700,
-  GENERATED_PASSWORD_MAX_AGE_MS: 10 * 60 * 1000,
-  POST_SUBMIT_TRANSITION_TIMEOUT_MS: 5000,
+  POST_SUBMIT_PROMPT_DELAY_MS: 700,
+  POST_SUBMIT_TRANSITION_TIMEOUT_MS: 30000,
   POST_SUBMIT_TRANSITION_CHECK_MS: 250,
   POST_SUBMIT_TRANSITION_STABLE_MS: 1000,
-  PENDING_PROMPT_READY_ARM_MS: 5000,
+  PENDING_PROMPT_READY_ARM_MS: 30000,
   SAVE_BANNER_TTL_MS: 5 * 60 * 1000,
 
   init() {
     if (this.initialized) return;
     this.initialized = true;
 
+    document.addEventListener('submit', (event) => this.captureSubmission(event), true);
+    document.addEventListener('click', (event) => this.captureSubmission(event), true);
+    document.addEventListener('keydown', (event) => this.captureSubmission(event), true);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') void this.checkPendingCredentials();
+    });
     this.refresh({ retryKnown: false });
 
     // Watch for DOM changes (SPAs) — debounced via rAF
@@ -42,7 +49,10 @@ const YurrrDetector = {
         this.scanForms();
       });
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ['type', 'autocomplete', 'form', 'hidden', 'disabled', 'readonly'],
+    });
   },
 
   refresh({ retryKnown = true } = {}) {
@@ -407,132 +417,116 @@ const YurrrDetector = {
     }
   },
 
-  getSubmitPasswordField(form, fallbackField) {
-    if (!form || !YurrrHeuristics.isPasswordChangeForm(form)) {
-      return fallbackField;
-    }
-
-    const currentPasswordField = YurrrHeuristics.findCurrentPasswordField(form);
-    const candidates = YurrrHeuristics.getVisiblePasswordFields(form)
-      .filter((field) => field !== currentPasswordField && String(field.value || '').length > 0);
-
-    return candidates.find((field) => YurrrHeuristics.isNewPasswordField(field))
-      || candidates[0]
-      || fallbackField;
+  getSubmitPasswordField(scope, fallbackField = null) {
+    const fields = scope ? YurrrHeuristics.getVisiblePasswordFields(scope).filter((field) =>
+      !YurrrHeuristics.getForm(field) || YurrrHeuristics.getForm(field) === scope)
+      : [fallbackField].filter(Boolean);
+    const current = fields.find((field) => YurrrHeuristics.isCurrentPasswordField(field));
+    const newFields = fields.filter((field) => YurrrHeuristics.isNewPasswordField(field));
+    const candidates = newFields.length ? newFields : fields.filter((field) => field !== current);
+    const primary = candidates.find((field) => !YurrrHeuristics.isConfirmationPasswordField(field))
+      || candidates[0] || current;
+    if (!primary?.value) return null;
+    // A change form with an empty new password must never save the old password.
+    if (fields.length > 1 && primary === current) return null;
+    if (candidates.some((field) => field !== primary && field.value !== primary.value)) return null;
+    return primary;
   },
 
-  attachFormSubmitHandler(form, resolveUsernameField, passwordField) {
-    if (!form || this.observedSubmitForms.has(form)) return;
-    this.observedSubmitForms.add(form);
+  isCredentialSubmitButton(button) {
+    if (button.disabled || button.type === 'reset') return false;
+    const text = `${button.textContent || ''} ${button.value || ''} ${button.getAttribute('aria-label') || ''}`;
+    if (/(cancel|abbrechen|zurück\b|back\b|show|hide|anzeigen|ausblenden|forgot|vergessen|generate|generier)/i.test(text)) return false;
+    return button.type === 'submit' ||
+      /(log[ -]?in|sign[ -]?in|sign[ -]?up|register|anmelden|einloggen|registrier|continue|weiter|next|save|speichern|update|ändern|bestätigen|create account|change password|reset password|passwort zurücksetzen)/i.test(text);
+  },
 
-    form.addEventListener('submit', (e) => {
-      if (!e.isTrusted) return;
-      this.handleFormSubmit(
-        form,
-        resolveUsernameField(),
-        this.getSubmitPasswordField(form, passwordField),
-      );
-    });
+  captureSubmission(event) {
+    if (!event.isTrusted || !this.isCredentialPageAllowed()) return;
+    const target = event.target;
+    if (target.closest?.('#yurrr-save-banner, #yurrr-overlay-host')) return;
+    let scope;
+    let fallbackField = null;
+    let fallbackUsernameField = null;
+    if (event.type === 'submit') {
+      scope = target;
+    } else if (event.type === 'keydown') {
+      if (event.key !== 'Enter' || event.repeat || event.isComposing || target.tagName !== 'INPUT') return;
+      fallbackField = YurrrHeuristics.isPasswordField(target) ? target : null;
+      if (!fallbackField && YurrrHeuristics.scoreUsernameCandidate(target) < 6) return;
+      if (!fallbackField) fallbackUsernameField = target;
+      scope = YurrrHeuristics.getForm(target);
+    } else {
+      const button = target.closest('button, input[type="submit"], input[type="button"], [role="button"]');
+      if (!button || !this.isCredentialSubmitButton(button)) return;
+      scope = YurrrHeuristics.getForm(button);
+      if (!scope) {
+        // For JS forms, use the nearest shared container of the action and fields.
+        for (let parent = button.parentElement; parent; parent = parent.parentElement) {
+          if (YurrrHeuristics.getVisiblePasswordFields(parent).some((field) => !YurrrHeuristics.getForm(field)) ||
+              YurrrHeuristics.findStandaloneUsernameFields(parent).some((field) => !YurrrHeuristics.getForm(field))) {
+            scope = parent;
+            break;
+          }
+        }
+      }
+    }
+    if (!scope && !fallbackField && !fallbackUsernameField) return;
+    const passwordField = this.getSubmitPasswordField(scope, fallbackField);
+    const usernameField = fallbackUsernameField || (passwordField
+      ? YurrrHeuristics.findUsernameField(passwordField, scope)
+      : YurrrHeuristics.findStandaloneUsernameFields(scope || document)[0]);
+    if (!passwordField && !usernameField) return;
+    if (scope?.tagName === 'FORM' && !scope.noValidate && !event.submitter?.formNoValidate &&
+        Array.from(scope.elements).some((field) => field.willValidate && !field.validity.valid)) return;
+    const key = scope || passwordField || usernameField;
+    if (this.submittingScopes.has(key)) return;
+    this.submittingScopes.add(key);
+    setTimeout(() => this.submittingScopes.delete(key), 0);
+    // Capture before page handlers reset or replace the fields.
+    void this.handleFormSubmit(scope, usernameField, passwordField);
   },
 
   scanForms({ retryKnown = false } = {}) {
-    const passwordFields = document.querySelectorAll('input[type="password"]');
+    const passwordFields = YurrrHeuristics.getPasswordFields();
 
     for (const pwField of passwordFields) {
-      const form = pwField.closest('form');
       const resolveUsernameField = () => YurrrHeuristics.findUsernameField(pwField);
       const initialUsernameField = resolveUsernameField();
-
+      const form = YurrrHeuristics.getForm(pwField);
+      const isNewPassword = YurrrHeuristics.isNewPasswordField(pwField) ||
+        (YurrrHeuristics.isRegistrationForm(form) && !YurrrHeuristics.isCurrentPasswordField(pwField));
       if (this.detectedForms.has(pwField)) {
-        const shouldRetryKnown = retryKnown
-          || (
-            this.autofilledPasswordFields.has(pwField) &&
-            String(pwField.value || '').length === 0
-          );
-        if (shouldRetryKnown) {
-          const isPasswordChange = YurrrHeuristics.isPasswordChangeForm(form);
-          const isRegistration = YurrrHeuristics.isRegistrationForm(form);
-          const currentPasswordField = isPasswordChange
-            ? YurrrHeuristics.findCurrentPasswordField(form)
-            : null;
-          if (!isRegistration && (!isPasswordChange || pwField === currentPasswordField)) {
-            this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
-          }
+        if (!isNewPassword && (retryKnown ||
+            (this.autofilledPasswordFields.has(pwField) && !pwField.value))) {
+          void this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
         }
         continue;
       }
       this.detectedForms.add(pwField);
+      if (initialUsernameField) this.detectedForms.add(initialUsernameField);
 
-      if (initialUsernameField) {
-        this.detectedForms.add(initialUsernameField);
-      }
-
-      const isPasswordChange = YurrrHeuristics.isPasswordChangeForm(form);
-      if (isPasswordChange) {
-        const currentPasswordField = YurrrHeuristics.findCurrentPasswordField(form);
-        if (pwField === currentPasswordField) {
-          this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
-          this.retryAutoFillOnInteraction(pwField, resolveUsernameField, pwField, { allowAutofill: true });
-          pwField.addEventListener('focus', () => {
-            const usernameField = resolveUsernameField();
-            this.attachPicker(pwField, usernameField, pwField);
-            this.attachPicker(usernameField, usernameField, pwField);
-          });
-        } else {
-          pwField.addEventListener('focus', () => {
-            if (this.isCredentialPageAllowed()) {
-              YurrrOverlay.show(pwField);
-            }
-          });
-        }
-
-        this.attachFormSubmitHandler(form, resolveUsernameField, pwField);
-        pwField.addEventListener('keydown', (e) => {
-          if (!e.isTrusted) return;
-          if (e.key === 'Enter') {
-            this.handleFormSubmit(
-              form,
-              resolveUsernameField(),
-              this.getSubmitPasswordField(form, pwField),
-            );
-          }
-        });
-        continue;
-      }
-
-      const isRegistration = YurrrHeuristics.isRegistrationForm(form);
-
-      if (isRegistration) {
-        pwField.addEventListener('focus', () => {
-          if (this.isCredentialPageAllowed()) {
-            YurrrOverlay.show(pwField);
-          }
-        });
-
+      if (!isNewPassword) {
+        void this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
+        this.retryAutoFillOnInteraction(pwField, resolveUsernameField, pwField, { allowAutofill: true });
+      } else {
         const emailField = YurrrHeuristics.findRegistrationEmailField(form, pwField) || initialUsernameField;
         if (emailField) {
           this.detectedForms.add(emailField);
-          void this.applyEmailSuggestions(emailField);
+          this.applyEmailSuggestions(emailField);
         }
-      } else {
-        this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
-        this.retryAutoFillOnInteraction(pwField, resolveUsernameField, pwField, { allowAutofill: true });
-
-        // Re-evaluate dynamically for multi-step/login forms that mutate fields after initial scan.
-        pwField.addEventListener('focus', () => {
-          const usernameField = resolveUsernameField();
-          this.attachPicker(pwField, usernameField, pwField);
-          this.attachPicker(usernameField, usernameField, pwField);
-        });
       }
-
-      this.attachFormSubmitHandler(form, resolveUsernameField, pwField);
-
-      pwField.addEventListener('keydown', (e) => {
-        if (!e.isTrusted) return;
-        if (e.key === 'Enter') {
-          this.handleFormSubmit(form, resolveUsernameField(), this.getSubmitPasswordField(form, pwField));
+      pwField.addEventListener('focus', () => {
+        const currentForm = YurrrHeuristics.getForm(pwField);
+        const isNew = YurrrHeuristics.isNewPasswordField(pwField) ||
+          (YurrrHeuristics.isRegistrationForm(currentForm) && !YurrrHeuristics.isCurrentPasswordField(pwField));
+        if (isNew) {
+          if (this.isCredentialPageAllowed()) YurrrOverlay.show(pwField);
+          return;
         }
+        const usernameField = resolveUsernameField();
+        this.attachPicker(pwField, usernameField, pwField);
+        this.attachPicker(usernameField, usernameField, pwField);
       });
     }
 
@@ -545,21 +539,6 @@ const YurrrDetector = {
       void this.applyEmailSuggestions(unField);
       this.tryAutoFill(unField, null);
       this.retryAutoFillOnInteraction(unField, unField, null);
-
-      const form = unField.closest('form');
-      if (form) {
-        form.addEventListener('submit', (e) => {
-          if (!e.isTrusted) return;
-          this.handleFormSubmit(form, unField, null);
-        });
-      }
-
-      unField.addEventListener('keydown', (e) => {
-        if (!e.isTrusted) return;
-        if (e.key === 'Enter') {
-          this.handleFormSubmit(form, unField, null);
-        }
-      });
 
       unField.addEventListener('change', () => {
         const username = unField.value || '';
@@ -961,6 +940,10 @@ const YurrrDetector = {
 
   canAutofillWithCredential(usernameField, passwordField, credential, options = {}) {
     if (!passwordField || !credential?.id) return false;
+    if (!YurrrHeuristics.isPasswordField(passwordField)) return false;
+    const form = YurrrHeuristics.getForm(passwordField);
+    if (YurrrHeuristics.isNewPasswordField(passwordField) ||
+        (YurrrHeuristics.isRegistrationForm(form) && !YurrrHeuristics.isCurrentPasswordField(passwordField))) return false;
     if (!passwordField.isConnected) return false;
     if (passwordField.disabled || passwordField.readOnly) return false;
     if (YurrrHeuristics.isHidden(passwordField)) return false;
@@ -1390,33 +1373,14 @@ const YurrrDetector = {
     }
   },
 
-  isYurrrGeneratedPassword(form, passwordField, password) {
-    if (!passwordField || !password) return false;
-
-    const candidates = [passwordField, form].filter(Boolean);
-    const store = globalThis.YurrrGeneratedPasswordStore;
-    if (!store) return false;
-
-    const now = Date.now();
-
-    return candidates.some((el) => {
-      const generated = store.get(el);
-      return (
-        generated?.password === password &&
-        Number.isFinite(generated.generatedAt) &&
-        now - generated.generatedAt <= this.GENERATED_PASSWORD_MAX_AGE_MS
-      );
-    });
-  },
-
   hasLikelyPostSubmitTransition(startUrl, form, passwordField) {
     if (window.location.href !== startUrl) return true;
-    if (form && (!form.isConnected || YurrrHeuristics.isHidden(form))) return true;
-    if (passwordField && (!passwordField.isConnected || YurrrHeuristics.isHidden(passwordField))) return true;
-    return false;
+    // A display:contents form has no box even while its password field is visible.
+    if (passwordField) return !passwordField.isConnected || YurrrHeuristics.isHidden(passwordField);
+    return Boolean(form && (!form.isConnected || YurrrHeuristics.isHidden(form)));
   },
 
-  queueGeneratedPasswordSavePrompt(url, username, password, domain, form, passwordField) {
+  queuePostSubmitSavePrompt(url, submissionId, form, passwordField) {
     if (this.savePromptTimer) {
       clearTimeout(this.savePromptTimer);
     }
@@ -1424,16 +1388,15 @@ const YurrrDetector = {
     const startedAt = Date.now();
     let transitionStartedAt = null;
     const checkForTransition = () => {
-      if (document.visibilityState === 'hidden') {
-        this.savePromptTimer = null;
-        return;
-      }
-
       if (this.hasLikelyPostSubmitTransition(url, form, passwordField)) {
         transitionStartedAt ||= Date.now();
         if (Date.now() - transitionStartedAt >= this.POST_SUBMIT_TRANSITION_STABLE_MS) {
           this.savePromptTimer = null;
-          this.showSaveBanner(url, username, password, domain);
+          void this.sendRuntimeMessage('MARK_PENDING_CREDENTIALS_READY', { submissionId })
+            .then((result) => {
+              if (result?.ready && document.visibilityState !== 'hidden') return this.checkPendingCredentials();
+            })
+            .catch(() => {});
           return;
         }
       } else {
@@ -1448,7 +1411,7 @@ const YurrrDetector = {
       this.savePromptTimer = setTimeout(checkForTransition, this.POST_SUBMIT_TRANSITION_CHECK_MS);
     };
 
-    this.savePromptTimer = setTimeout(checkForTransition, this.GENERATED_PASSWORD_PROMPT_DELAY_MS);
+    this.savePromptTimer = setTimeout(checkForTransition, this.POST_SUBMIT_PROMPT_DELAY_MS);
   },
 
   disarmPendingCredentialsPromptReady() {
@@ -1463,10 +1426,7 @@ const YurrrDetector = {
 
     let armed = true;
     let timeoutId = null;
-    const readyPayload = {
-      ...payload,
-      promptReady: true,
-    };
+    const readyPayload = { submissionId: payload.submissionId };
 
     const cleanup = () => {
       if (!armed) return;
@@ -1486,7 +1446,7 @@ const YurrrDetector = {
       if (!armed) return;
       cleanup();
       try {
-        chrome.runtime.sendMessage({ type: 'PENDING_CREDENTIALS', payload: readyPayload });
+        chrome.runtime.sendMessage({ type: 'MARK_PENDING_CREDENTIALS_READY', payload: readyPayload });
       } catch {
         // Best-effort marker during navigation.
       }
@@ -1517,7 +1477,11 @@ const YurrrDetector = {
     }
 
     const username = typedUsername;
+    const generation = ++this.submissionGeneration;
+    if (this.savePromptTimer) clearTimeout(this.savePromptTimer);
+    if (this.saveBannerCleanup) this.saveBannerCleanup(false);
     const pendingPayload = {
+      submissionId: crypto.randomUUID(),
       url,
       domain,
       pageUrl: url,
@@ -1531,18 +1495,17 @@ const YurrrDetector = {
     this.armPendingCredentialsPromptReady(pendingPayload);
     try {
       const response = await pendingStore;
-      if (response?.stored === false) {
+      if (generation !== this.submissionGeneration) return;
+      if (!response?.stored) {
         this.disarmPendingCredentialsPromptReady();
         return;
       }
     } catch {
-      this.disarmPendingCredentialsPromptReady();
+      if (generation === this.submissionGeneration) this.disarmPendingCredentialsPromptReady();
       return;
     }
 
-    if (this.isYurrrGeneratedPassword(form, passwordField, password)) {
-      this.queueGeneratedPasswordSavePrompt(url, username, password, domain, form, passwordField);
-    }
+    this.queuePostSubmitSavePrompt(url, pendingPayload.submissionId, form, passwordField);
   },
 
   async checkPendingCredentials() {
@@ -1556,9 +1519,10 @@ const YurrrDetector = {
         pageUrl: window.location.href,
       });
 
-      if (response.hasPending) {
+      if (response.hasPending && response.credentials.submissionId !== this.saveBannerSubmissionId) {
         const { url, username, password } = response.credentials;
         this.showSaveBanner(url, username, password, domain, {
+          submissionId: response.credentials.submissionId,
           action: response.credentials.action,
           entryId: response.credentials.entryId,
           message: response.credentials.message,
@@ -1577,6 +1541,7 @@ const YurrrDetector = {
       if (existing) existing.remove();
     }
 
+    this.saveBannerSubmissionId = options.submissionId || null;
     const banner = document.createElement('div');
     banner.id = 'yurrr-save-banner';
     const initialMessage = options.message || `Save password for ${domain}?`;
@@ -1599,10 +1564,11 @@ const YurrrDetector = {
       clearTimeout(autoDismissTimer);
       if (this.saveBannerCleanup === dismissBanner) {
         this.saveBannerCleanup = null;
+        this.saveBannerSubmissionId = null;
       }
       pendingPassword = '';
       if (clearPending) {
-        chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS' });
+        chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_CREDENTIALS', payload: { submissionId: options.submissionId } });
         chrome.runtime.sendMessage({ type: 'CLEAR_PENDING_USERNAME', payload: { domain } });
       }
       banner.remove();
@@ -1633,6 +1599,7 @@ const YurrrDetector = {
       setBannerMessage('Saving password...');
       try {
         const response = await this.sendRuntimeMessage('FORM_SUBMITTED', {
+          submissionId: options.submissionId,
           url,
           pageUrl: window.location.href,
           username,

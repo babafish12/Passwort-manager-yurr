@@ -30,6 +30,7 @@ export function chromeMock(initialLocal = {}, initialSession = {}) {
     action: { setBadgeText() {}, setBadgeBackgroundColor() {} },
     alarms: { clear: async () => true, create() {}, onAlarm: { addListener() {} } },
     idle: { setDetectionInterval() {}, onStateChanged: { addListener() {} } },
+    tabs: { onRemoved: { addListener() {} } },
     runtime: { id: 'test-extension', getURL: (path) => `chrome-extension://test-extension/${path}`, sendMessage: async () => {}, onMessage: { addListener() {} } },
     listeners,
   };

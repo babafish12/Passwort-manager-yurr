@@ -119,8 +119,9 @@ https://your-tailscale-ip:8443
 
 - The master password itself is not stored.
 - The raw encryption key is not written to disk.
-- Pending credentials from form submissions are kept in service-worker memory,
-  not browser extension storage.
+- Pending credentials from form submissions are kept for up to five minutes in
+  `chrome.storage.session`, which is temporary browser memory restricted to
+  trusted extension contexts. They are never written to local/sync storage.
 
 ### What is stored as metadata
 
@@ -483,9 +484,28 @@ guessing.
 
 ### Save a login after submitting a form
 
-When you submit a trusted login/signup form, Yurrr can show a save banner. The
-pending credential is scoped to the tab/frame and kept in extension service
-worker memory until saved, dismissed, replaced, or cleared.
+When you submit a login/signup/password-change form, Yurrr can show a save banner.
+It captures the current fields before page submit handlers clear or replace them.
+It also recognizes Enter and common login/save buttons used by JavaScript forms.
+Manually typed and generated passwords use the same detection path. A banner is
+offered after navigation or after the submitted password field disappears for at
+least one second; same-page transitions are observed for up to 30 seconds.
+An unchanged saved password does not produce another save prompt.
+
+The pending credential is scoped to the tab, frame and website and kept in
+`chrome.storage.session` until saved, dismissed, replaced or expired after five
+minutes. It survives service-worker suspension, and is cleared on lock, browser
+restart, extension reload and tab close. Remembered usernames for multi-step
+logins are also scoped to the tab/frame. Every save still requires clicking Save
+or Update in the banner.
+
+Detection currently covers ordinary page inputs, including dynamically replaced
+fields, password reveal toggles, and controls connected with `form="..."`.
+Nested iframe logins and fields inside Shadow DOM are not supported. Websites
+that keep the same visible form after success, use unrecognized custom controls,
+or require a new username without exposing an input may still need manual entry
+through the popup. Public HTTP pages are intentionally excluded from credential
+capture and autofill.
 
 ### Generate a password
 
@@ -693,8 +713,25 @@ rg --files extension -g '*.js' -0 | xargs -0 -n1 node --check
 
 The tests use synthetic credentials and an in-memory SQLite vault. They cover
 LAN port isolation, API lifecycle and re-encryption, session races, CSV parsing,
-and popup behavior. The Rust and JavaScript scope tests share the same URL cases.
+popup behavior, form detection, pending-save expiry, worker restarts and tab/frame
+isolation. The Rust and JavaScript scope tests share the same URL cases.
 The extension tests require Node.js 22 or later and no npm dependencies.
+
+For browser event checks, serve the repository locally:
+
+```bash
+python3 -m http.server 8769 --bind 127.0.0.1
+```
+
+Open `http://127.0.0.1:8769/tests/fixtures/forms.html?scenario=spa` in an isolated
+browser profile. The fixture loads the real content scripts with a simulated
+extension messaging API. Use synthetic credentials only. The scenarios in
+`tests/fixtures/browser-scenarios.js` can be passed as a function to Playwright
+CLI's `run-code` command. This checks browser DOM/events; the service worker and
+server are covered separately by the Node and Rust tests.
+
+See [the September 2026 review](docs/review-2026-09-10.md) for findings and remaining
+compatibility limits.
 
 ### Check whitespace in the Git diff
 
