@@ -8,6 +8,7 @@ SERVER_DIR="${YURRR_SERVER_DIR:-$REPO_DIR/server}"
 BACKUP_DIR="${YURRR_BACKUP_DIR:-$SERVER_DIR/backups}"
 ALLOW_DIRTY="${YURRR_ALLOW_DIRTY:-0}"
 SKIP_BACKUP="${YURRR_SKIP_BACKUP:-0}"
+RESTART_ON_EXIT=0
 
 log() {
   printf '\n==> %s\n' "$*"
@@ -27,6 +28,23 @@ require_cmd() {
     exit 1
   fi
 }
+
+recover_service() {
+  local result=$?
+  trap - EXIT
+  if [[ "$RESTART_ON_EXIT" == "1" ]]; then
+    printf '\nUpdate interrupted; restarting %s.\n' "$SERVICE_NAME" >&2
+    if ! run_sudo systemctl start "$SERVICE_NAME"; then
+      printf 'Recovery failed. Run: sudo systemctl start %q\n' "$SERVICE_NAME" >&2
+      result=1
+    fi
+  fi
+  exit "$result"
+}
+
+trap recover_service EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 backup_database() {
   local db_path="$SERVER_DIR/vault.db"
@@ -61,7 +79,7 @@ require_cmd systemctl
 
 cd "$REPO_DIR"
 
-if [[ ! -d .git ]]; then
+if [[ ! -e .git ]]; then
   printf 'Not a git repository: %s\n' "$REPO_DIR" >&2
   exit 1
 fi
@@ -85,6 +103,9 @@ log "Building server release binary"
 cargo build --release --manifest-path "$SERVER_DIR/Cargo.toml"
 
 log "Stopping $SERVICE_NAME"
+if run_sudo systemctl is-active --quiet "$SERVICE_NAME"; then
+  RESTART_ON_EXIT=1
+fi
 run_sudo systemctl stop "$SERVICE_NAME"
 
 backup_database
@@ -92,6 +113,7 @@ backup_database
 log "Starting $SERVICE_NAME"
 run_sudo systemctl daemon-reload
 run_sudo systemctl start "$SERVICE_NAME"
+RESTART_ON_EXIT=0
 
 log "Service status"
 run_sudo systemctl --no-pager --full status "$SERVICE_NAME"

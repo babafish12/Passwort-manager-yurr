@@ -172,41 +172,33 @@ pub async fn list_entries(
 ) -> Result<Json<Vec<EntryListItem>>, AppError> {
     let query_domain = query.domain.as_deref().map(extract_domain);
     let query_scope = query.domain.as_deref().and_then(domain::credential_scope);
-    let entries: Vec<EntryRow> = if let Some(domain) = &query_domain {
-        sqlx::query_as(
-            "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries WHERE website_domain IN (?, ?, ?) ORDER BY website_domain, username",
+    let entries: Vec<EntryListItem> =
+        if let Some(domain) = &query_domain {
+            sqlx::query_as(
+            "SELECT id, website_url, website_domain, username, favorite, created_at, updated_at,
+             EXISTS(SELECT 1 FROM favicons WHERE domain = entries.website_domain) AS has_favicon
+             FROM entries WHERE website_domain IN (?, ?, ?) ORDER BY website_domain, username",
         )
         .bind(domain)
         .bind(domain.strip_prefix("www.").unwrap_or(domain))
         .bind(format!("www.{}", domain.strip_prefix("www.").unwrap_or(domain)))
         .fetch_all(&state.db)
         .await?
-    } else {
-        sqlx::query_as(
-            "SELECT id, website_url, website_domain, username, password_encrypted, notes_encrypted, favorite, created_at, updated_at FROM entries ORDER BY website_domain, username",
+        } else {
+            sqlx::query_as(
+            "SELECT id, website_url, website_domain, username, favorite, created_at, updated_at,
+             EXISTS(SELECT 1 FROM favicons WHERE domain = entries.website_domain) AS has_favicon
+             FROM entries ORDER BY website_domain, username",
         )
         .fetch_all(&state.db)
         .await?
-    };
-
-    let favicon_domains: Vec<(String,)> = sqlx::query_as("SELECT domain FROM favicons")
-        .fetch_all(&state.db)
-        .await?;
-    let favicon_set: HashSet<String> = favicon_domains
-        .into_iter()
-        .map(|row| extract_domain(&row.0))
-        .collect();
+        };
 
     let items: Vec<EntryListItem> = entries
-        .iter()
+        .into_iter()
         .filter(|row| {
             !query_domain.as_deref().is_some_and(domain::is_local_host)
                 || domain::credential_scope(&row.website_url) == query_scope
-        })
-        .map(|row| {
-            let mut item = EntryListItem::from(row);
-            item.has_favicon = favicon_set.contains(&extract_domain(&row.website_domain));
-            item
         })
         .collect();
 

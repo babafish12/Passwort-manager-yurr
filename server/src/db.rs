@@ -77,6 +77,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         include_str!("../migrations/001_initial_schema.sql"),
         include_str!("../migrations/002_favicons.sql"),
         include_str!("../migrations/003_vault_items.sql"),
+        include_str!("../migrations/004_entry_list_index.sql"),
     ];
 
     for migration_sql in &migrations {

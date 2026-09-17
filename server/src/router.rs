@@ -1,4 +1,6 @@
-use axum::http::{header, Method};
+use axum::http::{header, HeaderValue, Method};
+use axum::middleware::map_response;
+use axum::response::Response;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use tower_http::cors::{AllowOrigin, AllowPrivateNetwork, CorsLayer};
@@ -64,7 +66,16 @@ pub fn build_router(state: AppState) -> Router {
         // Favicon route
         .route("/favicons/{domain}", get(favicons::get_favicon_handler))
         // Generate route
-        .route("/generate", post(generate::generate_password));
+        .route("/generate", post(generate::generate_password))
+        .layer(map_response(|mut response: Response| async move {
+            // Successful favicons supply their own cache policy. Secrets and
+            // error responses must never enter an HTTP cache.
+            response
+                .headers_mut()
+                .entry(header::CACHE_CONTROL)
+                .or_insert(HeaderValue::from_static("no-store"));
+            response
+        }));
 
     Router::new()
         .route("/healthz", get(health::healthz))
@@ -86,6 +97,7 @@ mod tests {
     struct TestServer {
         base: String,
         task: tokio::task::JoinHandle<()>,
+        pool: sqlx::SqlitePool,
     }
 
     impl Drop for TestServer {
@@ -102,7 +114,7 @@ mod tests {
             .unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
         let app = build_router(AppState {
-            db: pool,
+            db: pool.clone(),
             sessions: crate::session::SessionStore::new(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -110,7 +122,7 @@ mod tests {
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        TestServer { base, task }
+        TestServer { base, task, pool }
     }
 
     async fn request(
@@ -131,11 +143,86 @@ mod tests {
                 .body(body.to_string());
         }
         let response = req.send().await.unwrap();
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         let status = response.status();
         (
             status,
             serde_json::from_str(&response.text().await.unwrap()).unwrap(),
         )
+    }
+
+    #[tokio::test]
+    async fn cache_policy_protects_errors_and_metadata_but_preserves_favicon_caching() {
+        let server = test_server().await;
+        let client = Client::new();
+        let response = client
+            .get(format!("{}/entries", server.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let response = client
+            .post(format!("{}/auth/login", server.base))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body("{")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        request(
+            &client,
+            &server,
+            "POST",
+            "/auth/setup",
+            "",
+            json!({"master_password":"test-master-password"}),
+        )
+        .await;
+        let (_, login) = request(
+            &client,
+            &server,
+            "POST",
+            "/auth/login",
+            "",
+            json!({"master_password":"test-master-password"}),
+        )
+        .await;
+        let token = login["token"].as_str().unwrap();
+        sqlx::query("INSERT INTO favicons (domain, image_data, mime_type) VALUES (?, ?, ?)")
+            .bind("example.com")
+            .bind(vec![137_u8, 80, 78, 71])
+            .bind("image/png")
+            .execute(&server.pool)
+            .await
+            .unwrap();
+        request(&client, &server, "POST", "/entries", token, json!({"website_url":"https://example.com", "username":"alice", "password":"synthetic-secret", "notes":"private note"})).await;
+        let (status, list) = request(&client, &server, "GET", "/entries", token, Value::Null).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(list[0]["has_favicon"], true);
+        for key in ["password", "password_encrypted", "notes", "notes_encrypted"] {
+            assert!(list[0].get(key).is_none(), "list must not include {key}");
+        }
+        let response = client
+            .get(format!("{}/favicons/example.com", server.base))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "public, max-age=86400"
+        );
+        let response = client
+            .get(format!("{}/favicons/example.com", server.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        crate::db::run_migrations(&server.pool).await.unwrap();
     }
 
     #[tokio::test]

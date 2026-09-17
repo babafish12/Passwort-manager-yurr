@@ -107,7 +107,7 @@ pub struct LoginResponse {
     pub token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct EntryListItem {
     pub id: String,
     pub website_url: String,
