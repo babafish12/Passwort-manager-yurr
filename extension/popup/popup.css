@@ -652,6 +652,15 @@ textarea::placeholder {
   width: 8px;
 }
 
+.list-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 12px 0;
+}
+
 .entry-list::-webkit-scrollbar-track {
   background: transparent;
 }

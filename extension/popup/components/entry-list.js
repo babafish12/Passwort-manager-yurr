@@ -3,6 +3,10 @@ const EntryList = {
   entries: [],
   expiresAt: 0,
   expiryTimer: null,
+  page: 0,
+  pageSize: 50,
+  faviconGeneration: 0,
+  faviconObserver: null,
 
   init() {
     this.screen = document.getElementById('list-screen');
@@ -52,11 +56,12 @@ const EntryList = {
     this.expiryTimer = setTimeout(() => this.invalidate(), Math.max(0, this.expiresAt - Date.now()));
     window.updateCacheConnection?.(snapshot.offline);
     if (!this.screen.classList.contains('hidden') && window.VaultSections.activeTab === 'passwords') {
-      this.filterEntries();
+      this.filterEntries({ resetPage: false });
     }
   },
 
   invalidate() {
+    this.cancelFavicons();
     clearTimeout(this.expiryTimer);
     this.expiresAt = 0;
     this.entries = [];
@@ -79,14 +84,16 @@ const EntryList = {
   },
 
   hide() {
+    this.cancelFavicons();
     this.screen.classList.add('hidden');
   },
 
-  filterEntries() {
+  filterEntries({ resetPage = true } = {}) {
     if (window.VaultSections?.handleSearchInput?.()) {
       return;
     }
 
+    if (resetPage) this.page = 0;
     const query = this.searchInput.value.trim().toLowerCase();
     if (!query) {
       this.renderEntries(this.entries);
@@ -101,12 +108,15 @@ const EntryList = {
   },
 
   renderEntries(entries) {
+    this.cancelFavicons();
     if (!entries.length) {
       this.renderSearchEmptyState('passwords', this.searchInput.value.trim());
       return;
     }
 
-    this.listEl.innerHTML = entries
+    this.page = Math.max(0, Math.min(this.page, Math.ceil(entries.length / this.pageSize) - 1));
+    const start = this.page * this.pageSize;
+    this.listEl.innerHTML = entries.slice(start, start + this.pageSize)
       .map((e) => {
         const domain = YurrrSiteScope.label(e);
         const initial = domain ? domain.charAt(0).toUpperCase() : '?';
@@ -134,6 +144,25 @@ const EntryList = {
       })
       .join('');
 
+    if (entries.length > this.pageSize) {
+      this.listEl.insertAdjacentHTML('beforeend', `<nav class="list-pagination" aria-label="Password pages">
+        <button type="button" class="btn btn-secondary" data-page="previous" ${this.page === 0 ? 'disabled' : ''}>Previous</button>
+        <span aria-live="polite">${start + 1}–${Math.min(start + this.pageSize, entries.length)} of ${entries.length}</span>
+        <button type="button" class="btn btn-secondary" data-page="next" ${start + this.pageSize >= entries.length ? 'disabled' : ''}>Next</button>
+      </nav>`);
+      this.listEl.querySelectorAll('[data-page]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const direction = button.dataset.page;
+          this.page += direction === 'next' ? 1 : -1;
+          this.renderEntries(entries);
+          this.listEl.scrollTop = 0;
+          const next = this.listEl.querySelector(`[data-page="${direction}"]:not(:disabled)`)
+            || this.listEl.querySelector('[data-page]:not(:disabled)');
+          next?.focus({ preventScroll: true });
+        });
+      });
+    }
+
     // Click handlers
     this.listEl.querySelectorAll('.entry-main[data-id]').forEach((el) => {
       el.addEventListener('click', () => {
@@ -154,6 +183,7 @@ const EntryList = {
   },
 
   renderEmptyState(message, actionLabel, action) {
+    this.cancelFavicons();
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.textContent = message;
@@ -181,6 +211,7 @@ const EntryList = {
   },
 
   renderLoadingState(message = 'Loading...') {
+    this.cancelFavicons();
     this.listEl.innerHTML = `
       <div class="list-skeleton" role="status" aria-live="polite" aria-label="${escapeHtml(message)}">
         <div class="list-skeleton-line"></div>
@@ -233,80 +264,37 @@ const EntryList = {
     }
   },
 
+  cancelFavicons() {
+    this.faviconGeneration += 1;
+    this.faviconObserver?.disconnect();
+    this.faviconObserver = null;
+  },
+
   async loadFavicons() {
-    if (window.areFaviconsEnabled && !(await window.areFaviconsEnabled())) {
-      return;
-    }
-
-    const iconEls = this.listEl.querySelectorAll('.entry-icon[data-favicon-domain]');
-    const faviconsStillEnabled = async () => (
-      !window.areFaviconsEnabled || await window.areFaviconsEnabled()
-    );
-    const canApplyFavicon = async (el) => (
-      this.listEl.contains(el) && await faviconsStillEnabled()
-    );
-    const serverFallbacks = new Map();
-    const getServerFallback = async (domain) => {
-      if (!domain) {
-        return null;
-      }
-      if (!(await faviconsStillEnabled())) {
-        return null;
-      }
-      if (!serverFallbacks.has(domain)) {
-        serverFallbacks.set(
-          domain,
-          sendMessage('GET_FAVICON', { domain }).catch(() => null)
-        );
-      }
-      return serverFallbacks.get(domain);
+    const generation = this.faviconGeneration;
+    if (!(await window.areFaviconsEnabled?.()) || generation !== this.faviconGeneration) return;
+    const load = async (el) => {
+      const isCurrent = () => generation === this.faviconGeneration && this.listEl.contains(el);
+      const image = await FaviconLoader.load({
+        website_url: el.dataset.faviconUrl,
+        website_domain: el.dataset.faviconDomain,
+        has_favicon: el.dataset.hasFavicon === 'true',
+      }, isCurrent);
+      if (image && isCurrent()) el.replaceChildren(image);
     };
-
-    await Promise.all(Array.from(iconEls).map(async (el) => {
-      const domain = el.dataset.faviconDomain || '';
-      const websiteUrl = el.dataset.faviconUrl || '';
-      const hasServerFavicon = el.dataset.hasFavicon === 'true';
-      let discoveredLoaded = false;
-
-      const browserFaviconUrl = window.getBrowserFaviconUrl?.(websiteUrl, domain);
-      if (browserFaviconUrl) {
-        try {
-          const img = await window.loadPopupFaviconImage(browserFaviconUrl);
-          if (await canApplyFavicon(el)) {
-            el.replaceChildren(img);
-          }
-        } catch {
-          // Try the server-provided favicon below.
+    const icons = this.listEl.querySelectorAll('.entry-icon[data-favicon-domain]');
+    if (typeof IntersectionObserver === 'function') {
+      const observer = new IntersectionObserver((records) => {
+        for (const record of records) {
+          if (!record.isIntersecting) continue;
+          observer.unobserve(record.target);
+          void load(record.target);
         }
-      }
-
-      try {
-        const img = await window.loadDiscoveredFaviconImage?.(websiteUrl, domain);
-        if (img) {
-          discoveredLoaded = true;
-          if (await canApplyFavicon(el)) {
-            el.replaceChildren(img);
-          }
-        }
-      } catch {
-        // Fall back to the server-provided favicon below.
-      }
-
-      if (discoveredLoaded && !hasServerFavicon) {
-        return;
-      }
-
-      try {
-        const result = await getServerFallback(domain);
-        if (result && window.isSafeFaviconDataUrl?.(result.dataUrl)) {
-          const img = await window.loadPopupFaviconImage(result.dataUrl);
-          if (await canApplyFavicon(el)) {
-            el.replaceChildren(img);
-          }
-        }
-      } catch {
-        // Keep letter fallback
-      }
-    }));
+      }, { root: this.listEl, rootMargin: '80px' });
+      this.faviconObserver = observer;
+      icons.forEach((icon) => observer.observe(icon));
+    } else {
+      await Promise.all(Array.from(icons, load));
+    }
   },
 };

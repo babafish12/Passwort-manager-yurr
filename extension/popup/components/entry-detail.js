@@ -338,68 +338,11 @@ const EntryDetail = {
   },
 
   async loadDetailFavicon(entry) {
-    if (window.areFaviconsEnabled && !(await window.areFaviconsEnabled())) {
-      return;
-    }
-
-    const entryId = entry?.id;
-    const domain = entry?.website_domain || '';
-    const websiteUrl = entry?.website_url || '';
-    const hasServerFavicon = entry?.has_favicon === true;
-    let discoveredLoaded = false;
-    const isCurrentEntry = () => (
-      this.currentEntry?.id === entryId &&
-      this.currentEntry?.website_domain === domain &&
-      this.currentEntry?.website_url === websiteUrl
-    );
-    const canApplyFavicon = async () => (
-      isCurrentEntry() &&
-      (!window.areFaviconsEnabled || await window.areFaviconsEnabled())
-    );
-
-    const browserFaviconUrl = window.getBrowserFaviconUrl?.(websiteUrl, domain);
-    if (browserFaviconUrl) {
-      try {
-        const img = await window.loadPopupFaviconImage(browserFaviconUrl);
-        if (await canApplyFavicon()) {
-          this.faviconEl.replaceChildren(img);
-        }
-      } catch {
-        // Try the server-provided favicon below.
-      }
-    }
-
-    try {
-      const img = await window.loadDiscoveredFaviconImage?.(websiteUrl, domain);
-      if (img) {
-        discoveredLoaded = true;
-        if (await canApplyFavicon()) {
-          this.faviconEl.replaceChildren(img);
-        }
-      }
-    } catch {
-      // Fall back to the server-provided favicon below.
-    }
-
-    if (discoveredLoaded && !hasServerFavicon) {
-      return;
-    }
-
-    try {
-      const result = await sendMessage('GET_FAVICON', { domain });
-      if (
-        result &&
-        await canApplyFavicon() &&
-        window.isSafeFaviconDataUrl?.(result.dataUrl)
-      ) {
-        const img = await window.loadPopupFaviconImage(result.dataUrl);
-        if (await canApplyFavicon()) {
-          this.faviconEl.replaceChildren(img);
-        }
-      }
-    } catch {
-      // No favicon available
-    }
+    const revision = this.revision;
+    const isCurrent = () => this.revision === revision && this.currentEntry?.id === entry.id
+      && !this.screen.classList.contains('hidden');
+    const image = await FaviconLoader.load(entry, isCurrent);
+    if (image && isCurrent()) this.faviconEl.replaceChildren(image);
   },
 
   normalizeOpenUrl(value) {

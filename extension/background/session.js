@@ -22,6 +22,9 @@ export class SessionManager {
   constructor(api) {
     this.api = api;
     this.credentialCache = new Map();
+    this.credentialRequests = new Map();
+    this.credentialGeneration = 0;
+    this.credentialStorageQueue = Promise.resolve();
     this.popupCache = new PopupCache(api, this);
     this.onLock = () => {};
     this._cachedMode = null;
@@ -334,33 +337,42 @@ export class SessionManager {
 
   async getCredentialsForDomain(domain) {
     const normalizedDomain = this._normalizeDomain(domain);
-    if (!normalizedDomain) {
-      return [];
-    }
-
+    if (!normalizedDomain) return [];
+    const generation = this.credentialGeneration;
+    const tokenGeneration = this.api.tokenGeneration;
     const serverUrl = await this.api.getServerUrl();
+    const assertCurrent = () => {
+      if (generation !== this.credentialGeneration || tokenGeneration !== this.api.tokenGeneration ||
+          serverUrl !== this.api.serverUrl || !this.api.token) {
+        throw this.api.createError('Session or credentials changed. Please retry.', 'SESSION_CHANGED');
+      }
+    };
+    assertCurrent();
     const memoryRecord = this.credentialCache.get(normalizedDomain);
     if (this._isFreshCredentialCacheRecord(memoryRecord, serverUrl)) {
       return memoryRecord.entries;
     }
-
-    const sessionRecord = await this._readCredentialMetadataCache(normalizedDomain, serverUrl);
-    if (sessionRecord) {
-      this.credentialCache.set(normalizedDomain, sessionRecord);
-      return sessionRecord.entries;
-    }
-
-    try {
-      const entries = this._sanitizeCredentialMetadata(
-        await this.api.listEntries(normalizedDomain)
-      );
-      await this._writeCredentialMetadataCache(normalizedDomain, serverUrl, entries);
-      return entries;
-    } catch (err) {
-      if (err?.code === 'NETWORK_ERROR' || err?.code === 'AUTH_ERROR') {
-        throw err;
+    const key = `${tokenGeneration}:${generation}:${serverUrl}:${normalizedDomain}`;
+    if (this.credentialRequests.has(key)) return this.credentialRequests.get(key);
+    const request = (async () => {
+      await this.credentialStorageQueue;
+      const sessionRecord = await this._readCredentialMetadataCache(normalizedDomain, serverUrl);
+      assertCurrent();
+      if (sessionRecord) {
+        this.credentialCache.set(normalizedDomain, sessionRecord);
+        return sessionRecord.entries;
       }
-      return [];
+      const entries = this._sanitizeCredentialMetadata(await this.api.listEntries(normalizedDomain));
+      assertCurrent();
+      await this._writeCredentialMetadataCache(normalizedDomain, serverUrl, entries, assertCurrent);
+      assertCurrent();
+      return entries;
+    })();
+    this.credentialRequests.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (this.credentialRequests.get(key) === request) this.credentialRequests.delete(key);
     }
   }
 
@@ -398,8 +410,9 @@ export class SessionManager {
       record &&
       Array.isArray(record.entries) &&
       typeof record.cachedAt === 'number' &&
+      Date.now() >= record.cachedAt &&
       Date.now() - record.cachedAt < CREDENTIAL_METADATA_CACHE_TTL_MS &&
-      this.api.sameServerOrigin(record.serverUrl, serverUrl)
+      record.serverUrl === serverUrl && record.token === this.api.token
     );
   }
 
@@ -411,15 +424,13 @@ export class SessionManager {
         ? cache[domain]
         : null;
       if (!this._isFreshCredentialCacheRecord(record, serverUrl)) {
-        if (record) {
-          await this._removeCredentialMetadataCacheDomain(domain);
-        }
         return null;
       }
 
       return {
         cachedAt: record.cachedAt,
         serverUrl: record.serverUrl,
+        token: record.token,
         entries: this._sanitizeCredentialMetadata(record.entries),
       };
     } catch {
@@ -427,57 +438,49 @@ export class SessionManager {
     }
   }
 
-  async _writeCredentialMetadataCache(domain, serverUrl, entries) {
+  async _writeCredentialMetadataCache(domain, serverUrl, entries, assertCurrent) {
     const record = {
       cachedAt: Date.now(),
       serverUrl,
+      token: this.api.token,
       entries,
     };
     this.credentialCache.set(domain, record);
+    for (const [key, item] of this.credentialCache) {
+      if (!this._isFreshCredentialCacheRecord(item, serverUrl)) this.credentialCache.delete(key);
+    }
+    while (this.credentialCache.size > CREDENTIAL_METADATA_CACHE_MAX_DOMAINS) {
+      this.credentialCache.delete(this.credentialCache.keys().next().value);
+    }
 
-    try {
-      const result = await chrome.storage.session.get(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
-      const rawCache = result[STORAGE_KEY_CREDENTIAL_METADATA_CACHE];
-      const cache = rawCache && typeof rawCache === 'object' && !Array.isArray(rawCache)
-        ? { ...rawCache }
-        : {};
-      cache[domain] = record;
-
-      const trimmedCache = Object.fromEntries(
-        Object.entries(cache)
-          .filter(([, item]) => this._isFreshCredentialCacheRecord(item, serverUrl))
-          .sort(([, a], [, b]) => b.cachedAt - a.cachedAt)
-          .slice(0, CREDENTIAL_METADATA_CACHE_MAX_DOMAINS)
-      );
-
-      await chrome.storage.session.set({
-        [STORAGE_KEY_CREDENTIAL_METADATA_CACHE]: trimmedCache,
-      });
-    } catch {
+    const writing = this.credentialStorageQueue.then(async () => {
+      assertCurrent();
       try {
-        await chrome.storage.session.remove(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
-      } catch {
-        // Ignore cache cleanup failure.
-      }
-    }
-  }
+        const result = await chrome.storage.session.get(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
+        assertCurrent();
+        const rawCache = result[STORAGE_KEY_CREDENTIAL_METADATA_CACHE];
+        const cache = rawCache && typeof rawCache === 'object' && !Array.isArray(rawCache)
+          ? { ...rawCache }
+          : {};
+        cache[domain] = record;
 
-  async _removeCredentialMetadataCacheDomain(domain) {
-    try {
-      const result = await chrome.storage.session.get(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
-      const rawCache = result[STORAGE_KEY_CREDENTIAL_METADATA_CACHE];
-      if (!rawCache || typeof rawCache !== 'object' || Array.isArray(rawCache)) {
-        return;
-      }
+        const trimmedCache = Object.fromEntries(
+          Object.entries(cache)
+            .filter(([, item]) => this._isFreshCredentialCacheRecord(item, serverUrl))
+            .sort(([, a], [, b]) => b.cachedAt - a.cachedAt)
+            .slice(0, CREDENTIAL_METADATA_CACHE_MAX_DOMAINS)
+        );
 
-      const cache = { ...rawCache };
-      delete cache[domain];
-      await chrome.storage.session.set({
-        [STORAGE_KEY_CREDENTIAL_METADATA_CACHE]: cache,
-      });
-    } catch {
-      // Cache cleanup should never break autofill.
-    }
+        await chrome.storage.session.set({
+          [STORAGE_KEY_CREDENTIAL_METADATA_CACHE]: trimmedCache,
+        });
+      } catch (err) {
+        if (err.code === 'SESSION_CHANGED') throw err;
+        // Metadata remains usable in RAM if browser storage is unavailable.
+      }
+    });
+    this.credentialStorageQueue = writing.catch(() => {});
+    await writing;
   }
 
   async clearCache() {
@@ -497,11 +500,13 @@ export class SessionManager {
   }
 
   async clearCredentialMetadataCache() {
+    this.credentialGeneration += 1;
     this.credentialCache.clear();
-    try {
-      await chrome.storage.session.remove(STORAGE_KEY_CREDENTIAL_METADATA_CACHE);
-    } catch {
-      // Cache cleanup must not block lock/logout.
-    }
+    this.credentialRequests.clear();
+    this.credentialStorageQueue = this.credentialStorageQueue.then(async () => {
+      try { await chrome.storage.session.remove(STORAGE_KEY_CREDENTIAL_METADATA_CACHE); }
+      catch { /* Cache cleanup must not block lock/logout. */ }
+    });
+    await this.credentialStorageQueue;
   }
 }

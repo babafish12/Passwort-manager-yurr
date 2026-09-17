@@ -286,9 +286,10 @@ async function discoverFaviconCandidates(websiteUrl, domain) {
   return discovery;
 }
 
-async function loadDiscoveredFaviconImage(websiteUrl, domain) {
+async function loadDiscoveredFaviconImage(websiteUrl, domain, isCurrent = () => true) {
   const candidates = await discoverFaviconCandidates(websiteUrl, domain);
   for (const src of candidates) {
+    if (!isCurrent()) return null;
     try {
       return await loadPopupFaviconImage(src);
     } catch {
@@ -317,8 +318,13 @@ function loadPopupFaviconImage(src) {
     img.alt = '';
     img.decoding = 'async';
     img.referrerPolicy = 'no-referrer';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to load favicon'));
+    const timer = setTimeout(() => {
+      img.onload = img.onerror = null;
+      img.removeAttribute('src');
+      reject(new Error('Favicon timed out'));
+    }, FAVICON_DISCOVERY_TIMEOUT_MS);
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); reject(new Error('Failed to load favicon')); };
     img.src = src;
   });
 }
