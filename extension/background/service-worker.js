@@ -418,7 +418,7 @@ async function getCredentialForPageById(id, pageUrl) {
 
 async function sendTabMessage(tabId, message) {
   return await new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, message, { frameId: 0 }, (response) => {
+    chrome.tabs.sendMessage(tabId, message, {}, (response) => {
       if (chrome.runtime.lastError) {
         resolve(null);
         return;
@@ -1133,6 +1133,9 @@ async function dispatchMessage(message, sender) {
     }
 
     case 'GET_CREDENTIAL_FOR_AUTOFILL': {
+      if (isContentScriptSender(sender) && (sender.frameId !== 0 || sender.tab.active === false)) {
+        return { credential: null };
+      }
       if (!(await session.isUnlocked()) || !(await isAutofillEnabled())) {
         return { credential: null };
       }
@@ -1218,7 +1221,7 @@ async function dispatchMessage(message, sender) {
     case 'PENDING_CREDENTIALS': {
       const generation = api.tokenGeneration;
       if (!(await session.isUnlocked())) {
-        return { stored: false };
+        return { stored: false, reason: 'locked' };
       }
 
       const pageUrl = getMessagePageUrl(payload, sender);
@@ -1252,7 +1255,7 @@ async function dispatchMessage(message, sender) {
 
     case 'CHECK_PENDING_CREDENTIALS': {
       if (!(await session.isUnlocked())) {
-        return { hasPending: false };
+        return { hasPending: false, reason: 'locked' };
       }
 
       const pageUrl = getMessagePageUrl(payload, sender);
@@ -1266,8 +1269,9 @@ async function dispatchMessage(message, sender) {
         return { hasPending: false };
       }
 
-      if (pending.promptReady !== true && pending.pageUrl === pageUrl) {
-        return { hasPending: false };
+      if (payload.submissionId && payload.submissionId !== pending.submissionId) return { hasPending: false };
+      if (pending.promptReady !== true && pending.pageUrl === pageUrl && payload.manual !== true) {
+        return { hasPending: false, available: true, submissionId: pending.submissionId, expiresAt: pending.expiresAt };
       }
 
       await session.resetAutoLock();
@@ -1279,7 +1283,7 @@ async function dispatchMessage(message, sender) {
       const current = await getPendingCredentials(domain, sender);
       if (current?.submissionId !== pending.submissionId) return { hasPending: false };
 
-      if (['unchanged', 'missing_username', 'ambiguous_username'].includes(decision.action)) {
+      if (decision.action === 'unchanged') {
         await clearPendingUsername(domain, sender);
         await clearPendingCredentials(domain, sender, pending?.submissionId);
         return {
@@ -1290,13 +1294,19 @@ async function dispatchMessage(message, sender) {
 
       return {
         hasPending: true,
+        reason: decision.action,
         credentials: {
           url: pending.url,
           domain: pending.domain,
           username,
           password: pending.password,
           submissionId: pending.submissionId,
-          action: decision.action === 'update' ? 'update' : 'save',
+          expiresAt: pending.expiresAt,
+          action: ['missing_username', 'ambiguous_username'].includes(decision.action)
+            ? 'choose_account' : decision.action === 'update' ? 'update' : 'save',
+          accounts: ['missing_username', 'ambiguous_username'].includes(decision.action)
+            ? existing.filter((entry) => isCredentialAllowedForPage(entry, pageUrl))
+              .map((entry) => ({ id: entry.id, username: entry.username })) : [],
           entryId: decision.entryId || null,
           message: buildSavePromptMessage(decision, pending.domain || domain, decision.username || username),
         },

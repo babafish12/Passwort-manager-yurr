@@ -218,3 +218,61 @@ test('the generator fills new and confirmation fields without overwriting the cu
   assert.equal(confirm.value, 'generated-secret');
   assert.equal(readonly.value, 'readonly-value');
 });
+
+test('pending checks retry twice, report failure, and a newer check cancels an older retry', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 100000 });
+  const { subject } = detector({ Date, setTimeout, clearTimeout });
+  let calls = 0;
+  let status;
+  subject.sendRuntimeMessage = async () => { calls++; throw new Error('offline'); };
+  subject.showSaveStatus = (message) => { status = message; };
+  await subject.checkPendingCredentials();
+  t.mock.timers.tick(1000);
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(3000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 3);
+  assert.match(status, /server connection/);
+  t.mock.timers.tick(60000);
+  assert.equal(calls, 3);
+  await subject.checkPendingCredentials();
+  subject.sendRuntimeMessage = async () => ({ hasPending: false });
+  await subject.checkPendingCredentials();
+  t.mock.timers.tick(1000);
+  assert.equal(calls, 4);
+});
+
+test('a retargeted Shadow DOM submission captures the real form in the composed path', () => {
+  const { subject } = detector();
+  const password = field('password', 'shadow-secret');
+  const owner = form(password);
+  let captured;
+  subject.handleFormSubmit = (_, user, pw) => { captured = pw.value; };
+  subject.captureSubmission({ type: 'submit', isTrusted: true, target: {}, composedPath: () => [owner] });
+  assert.equal(captured, 'shadow-secret');
+});
+
+test('child frames cannot automatically fill even an otherwise eligible password field', () => {
+  const { subject, window } = detector();
+  const password = field('password', '');
+  form(password);
+  window.top = {};
+  assert.equal(subject.canAutofillWithCredential(null, password, { id: 'one' }, { allowMissingUsername: true }), false);
+});
+
+test('save banner configuration never retains a second password reference', async () => {
+  const { subject } = detector();
+  subject.sendRuntimeMessage = async () => ({ hasPending: true, credentials: {
+    url: 'https://example.com', username: 'alice', password: 'synthetic-secret',
+    submissionId: 'attempt', expiresAt: 123, action: 'choose_account', accounts: [],
+  } });
+  let options;
+  subject.showSaveBanner = (_url, _username, password, _domain, config) => {
+    assert.equal(password, 'synthetic-secret');
+    options = config;
+  };
+  await subject.checkPendingCredentials();
+  assert.equal(Object.hasOwn(options, 'password'), false);
+  assert.equal(options.submissionId, 'attempt');
+  assert.equal(options.expiresAt, 123);
+});

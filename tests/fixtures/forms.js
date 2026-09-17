@@ -2,6 +2,15 @@
 const scenario = new URLSearchParams(location.search).get('scenario') || 'spa';
 const fixture = document.getElementById('fixture');
 const state = window.fixtureState = { messages: [], pending: null, username: '', saved: null };
+// Fixture-only access: real extension scripts run in an isolated world and keep
+// the save controls in a closed root. Retain the test handle for trusted clicks.
+const attachShadow = Element.prototype.attachShadow;
+Element.prototype.attachShadow = function (options) {
+  const root = attachShadow.call(this, options);
+  if (this.id === 'yurrr-save-banner') state.saveBannerRoot = root;
+  if (this.id === 'yurrr-overlay-host') state.overlayRoot = root;
+  return root;
+};
 const user = '<label>Email <input name="email" type="email" autocomplete="username" required></label>';
 const password = '<label>Password <input name="password" type="password" required></label>';
 if (scenario.startsWith('landed')) state.pending = JSON.parse(sessionStorage.getItem('yurrr-fixture-pending') || 'null');
@@ -13,10 +22,15 @@ window.chrome = {
     sendMessage({ type, payload = {} }, callback) {
       state.messages.push({ type, payload });
       let response = {};
+      if (type === 'GENERATE_PASSWORD') response = { password: 'synthetic-generated' };
       if (type === 'PENDING_USERNAME') state.username = payload.username;
       if (type === 'GET_PENDING_USERNAME') response = { username: state.username };
       if (type === 'PENDING_CREDENTIALS') {
-        state.pending = { ...payload, username: payload.username || state.username };
+        state.pending = { ...payload, username: payload.username || state.username, expiresAt: Date.now() + 300000 };
+        if (scenario === 'choose-account') {
+          state.pending.action = 'choose_account';
+          state.pending.accounts = [{ id: 'alice', username: 'alice' }, { id: 'bob', username: 'bob' }];
+        }
         sessionStorage.setItem('yurrr-fixture-pending', JSON.stringify(state.pending));
         response = { stored: true };
       }
@@ -26,7 +40,10 @@ window.chrome = {
         response = { ready: true };
       }
       if (type === 'CHECK_PENDING_CREDENTIALS') response = {
-        hasPending: Boolean(state.pending && (state.pending.promptReady || state.pending.pageUrl !== location.href)),
+        hasPending: Boolean(state.pending && (payload.manual || state.pending.promptReady || state.pending.pageUrl !== location.href)),
+        available: Boolean(state.pending && !state.pending.promptReady && !payload.manual),
+        submissionId: state.pending?.submissionId,
+        expiresAt: state.pending?.expiresAt,
         credentials: state.pending,
       };
       if (type === 'CLEAR_PENDING_CREDENTIALS' && state.pending?.submissionId === payload.submissionId) state.pending = null;
@@ -85,6 +102,7 @@ if (scenario === 'reveal') {
 }
 function finish(event) {
   event.preventDefault();
+  if (['manual', 'choose-account'].includes(scenario)) { document.getElementById('result').textContent = 'Signed in'; return; }
   if (scenario === 'failed' || scenario === 'contents-failed') { document.getElementById('result').textContent = 'Invalid password'; return; }
   if (scenario === 'navigation') { location.href = '?scenario=landed'; return; }
   if (scenario === 'navigation-with-form') { location.href = '?scenario=landed-with-form'; return; }
@@ -106,3 +124,36 @@ function bindSubmit() {
 }
 bindSubmit();
 if (['click', 'formless', 'reset-click'].includes(scenario)) fixture.querySelector('button').addEventListener('click', finish);
+
+if (['shadow', 'nested-shadow', 'dynamic-shadow', 'shadow-formless', 'shadow-replacement'].includes(scenario)) {
+  const makeShadow = () => {
+    const host = document.createElement('section');
+    fixture.replaceChildren(host);
+    let root = host.attachShadow({ mode: 'open' });
+    if (scenario === 'nested-shadow') {
+      const inner = document.createElement('div');
+      root.append(inner);
+      root = inner.attachShadow({ mode: 'open' });
+    }
+    const render = () => {
+      root.innerHTML = scenario === 'shadow-formless'
+        ? `${user}${password}<button type="button">Sign in</button>`
+        : `<form>${user}${password}${button}</form>`;
+      (root.querySelector('form') || root.querySelector('button')).addEventListener(scenario === 'shadow-formless' ? 'click' : 'submit', (event) => {
+        event.preventDefault();
+        root.replaceChildren();
+      });
+    };
+    render();
+    if (scenario === 'shadow-replacement') {
+      const replace = document.createElement('button');
+      replace.textContent = 'Replace shadow fields';
+      replace.addEventListener('click', render);
+      fixture.append(replace);
+    }
+  };
+  if (scenario === 'dynamic-shadow') {
+    fixture.innerHTML = '<button id="attach-shadow">Open login</button>';
+    fixture.querySelector('button').addEventListener('click', makeShadow);
+  } else makeShadow();
+}

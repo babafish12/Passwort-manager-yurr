@@ -110,6 +110,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
   font-family: 'Atkinson Hyperlegible', Aptos, 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   color: #eef3ef;
   box-shadow: 0 8px 22px rgba(23, 32, 36, 0.28);
@@ -121,50 +122,30 @@
   to { transform: translateY(0); }
 }
 
-#yurrr-save-banner .yurrr-banner-text {
-  font-size: 14px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-#yurrr-save-banner .yurrr-banner-text strong {
-  color: #d8b24c;
-}
-
-#yurrr-save-banner .yurrr-banner-text[data-variant='error'] {
-  color: #ffd3ce;
-}
-
-#yurrr-save-banner .yurrr-banner-actions {
+#yurrr-save-status {
+  position: fixed;
+  bottom: 12px;
+  right: 12px;
+  max-width: min(460px, calc(100vw - 48px));
+  z-index: 2147483647;
+  padding: 12px;
   display: flex;
-  gap: 8px;
-  flex-shrink: 0;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid #d8b24c;
+  border-radius: 8px;
+  background: #172024;
+  color: #eef3ef;
+  font: 13px/1.4 system-ui, sans-serif;
 }
 
-#yurrr-save-banner .yurrr-banner-actions button {
-  padding: 6px 14px;
-  border: none;
+#yurrr-save-status button {
+  padding: 6px 10px;
+  border: 0;
   border-radius: 4px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-#yurrr-save-banner .yurrr-banner-actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.yurrr-banner-save {
   background: #d8b24c;
   color: #172024;
-}
-
-.yurrr-banner-dismiss {
-  background: #243039;
-  color: #eef3ef;
+  cursor: pointer;
 }
 
 /* Credential picker icon */

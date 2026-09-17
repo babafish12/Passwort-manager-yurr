@@ -136,7 +136,8 @@ const YurrrOverlay = {
 
     // Close on outside click
     document.addEventListener('click', (e) => {
-      if (this.container && !this.container.contains(e.target) && e.target !== this.currentTarget) {
+      const path = e.composedPath?.() || [e.target];
+      if (this.container && !path.includes(this.container) && !path.includes(this.currentTarget)) {
         this.hide();
       }
     });
@@ -242,7 +243,7 @@ const YurrrOverlay = {
     const target = this.currentTarget;
     const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     nativeSetter.call(target, pw);
-    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     target.dispatchEvent(new Event('change', { bubbles: true }));
 
     // Also fill confirm password if present
@@ -270,7 +271,7 @@ const YurrrOverlay = {
         }
 
         nativeSetter.call(field, pw);
-        field.dispatchEvent(new Event('input', { bubbles: true }));
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
         field.dispatchEvent(new Event('change', { bubbles: true }));
       }
     }

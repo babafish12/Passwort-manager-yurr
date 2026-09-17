@@ -2,6 +2,7 @@
 const YurrrDetector = {
   initialized: false,
   detectedForms: new WeakSet(),
+  detectedPasswords: new WeakSet(),
   detectedAddressFields: new WeakSet(),
   activePicker: null,
   activePickerCleanup: null,
@@ -10,6 +11,10 @@ const YurrrDetector = {
   activeAddressPicker: null,
   activeAddressPickerCleanup: null,
   scanQueued: false,
+  scanScopes: new Set(),
+  observedRoots: new Map(),
+  UI_SELECTOR: '#yurrr-save-banner, #yurrr-save-status, #yurrr-overlay-host, [data-yurrr-ui]',
+  FIELD_SELECTOR: 'input, textarea, select, form, [role="form"], label',
   emailSuggestionsCache: null,
   emailSuggestionsCacheAt: 0,
   autofilledPasswordFields: new WeakMap(),
@@ -18,6 +23,9 @@ const YurrrDetector = {
   saveBannerSubmissionId: null,
   savePromptTimer: null,
   saveBannerCleanup: null,
+  saveStatusCleanup: null,
+  pendingCheckGeneration: 0,
+  pendingRetryTimer: null,
   pendingPromptReadyCleanup: null,
   EMAIL_SUGGESTIONS_LIST_ID: 'yurrr-email-suggestions-list',
   MAX_VISIBLE_EMAIL_SUGGESTIONS: 8,
@@ -35,30 +43,99 @@ const YurrrDetector = {
     document.addEventListener('submit', (event) => this.captureSubmission(event), true);
     document.addEventListener('click', (event) => this.captureSubmission(event), true);
     document.addEventListener('keydown', (event) => this.captureSubmission(event), true);
+    document.addEventListener('focus', (event) => {
+      const field = event.composedPath()[0];
+      const root = field?.getRootNode();
+      if (root?.host && root.mode === 'open' && !this.observedRoots.has(root)) {
+        this.observeRoot(root);
+        this.scanForms({ scope: root });
+      }
+    }, true);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') void this.checkPendingCredentials();
     });
     this.refresh({ retryKnown: false });
 
-    // Watch for DOM changes (SPAs) — debounced via rAF
-    const observer = new MutationObserver(() => {
-      if (this.scanQueued) return;
-      this.scanQueued = true;
-      requestAnimationFrame(() => {
-        this.scanQueued = false;
-        this.scanForms();
-      });
-    });
-    observer.observe(document.body, {
+  },
+
+  observeRoot(root) {
+    if (this.observedRoots.has(root)) return;
+    const observer = new MutationObserver((records) => this.handleMutations(records));
+    observer.observe(root === document ? document.documentElement : root, {
       childList: true, subtree: true, attributes: true,
-      attributeFilter: ['type', 'autocomplete', 'form', 'hidden', 'disabled', 'readonly'],
+      attributeFilter: ['type', 'autocomplete', 'form', 'hidden', 'disabled', 'readonly', 'class', 'style'],
+    });
+    const submit = (event) => this.captureSubmission(event);
+    if (root !== document) root.addEventListener('submit', submit, true);
+    this.observedRoots.set(root, { observer, submit });
+  },
+
+  discoverRoots(node) {
+    for (const el of [node, ...node.querySelectorAll?.('*') || []]) {
+      if (!el.shadowRoot || el.closest?.(this.UI_SELECTOR)) continue;
+      if (!this.observedRoots.has(el.shadowRoot)) {
+        this.observeRoot(el.shadowRoot);
+        this.queueScan(el.shadowRoot);
+      }
+      this.discoverRoots(el.shadowRoot);
+    }
+  },
+
+  handleMutations(records) {
+    for (const record of records) {
+      const target = record.target;
+      if (target.closest?.(this.UI_SELECTOR)) continue;
+      if (record.type === 'childList') {
+        const changed = [...record.addedNodes, ...record.removedNodes].filter((node) => node.nodeType === 1);
+        for (const node of record.addedNodes) {
+          if (node.nodeType === 1 && !node.matches(this.UI_SELECTOR)) this.discoverRoots(node);
+        }
+        if (!changed.some((node) => !node.matches(this.UI_SELECTOR) &&
+            (node.matches(this.FIELD_SELECTOR) || node.querySelector(this.FIELD_SELECTOR)))) continue;
+      } else if (!target.matches?.(this.FIELD_SELECTOR) && !target.querySelector?.(this.FIELD_SELECTOR)) {
+        continue;
+      }
+      const scope = YurrrHeuristics.getForm(target) ||
+        (target.matches?.('input, textarea, select') ? target.getRootNode() : target);
+      this.queueScan(scope);
+      // Controls using form= may be outside the mutated subtree.
+      for (const node of record.addedNodes || []) {
+        if (node.form) this.queueScan(node.form);
+      }
+    }
+    for (const [root, { observer, submit }] of this.observedRoots) {
+      if (root.host && !root.host.isConnected) {
+        observer.disconnect();
+        root.removeEventListener('submit', submit, true);
+        this.observedRoots.delete(root);
+      }
+    }
+  },
+
+  queueScan(scope) {
+    this.scanScopes.add(scope);
+    if (this.scanQueued) return;
+    this.scanQueued = true;
+    requestAnimationFrame(() => {
+      this.scanQueued = false;
+      const scopes = [...this.scanScopes];
+      this.scanScopes.clear();
+      for (const scope of scopes) {
+        if (scope.isConnected === false || scopes.some((other) => other !== scope && other.contains(scope))) continue;
+        this.scanForms({ scope });
+      }
     });
   },
 
   refresh({ retryKnown = true } = {}) {
     this.removeEmailSuggestionsDatalist();
     void this.checkPendingCredentials();
-    this.scanForms({ retryKnown });
+    this.observeRoot(document);
+    this.discoverRoots(document);
+    this.scanScopes.clear();
+    for (const root of this.observedRoots.keys()) {
+      if (root.isConnected !== false) this.scanForms({ retryKnown, scope: root });
+    }
     return true;
   },
 
@@ -217,7 +294,7 @@ const YurrrDetector = {
     if (!this.isCredentialPageAllowed()) return;
 
     const suggestions = await this.loadEmailSuggestions(true);
-    if (!field.isConnected || document.activeElement !== field) {
+    if (!field.isConnected || (field.getRootNode?.() || document).activeElement !== field) {
       this.hideEmailPicker();
       return;
     }
@@ -230,6 +307,7 @@ const YurrrDetector = {
     this.hideEmailPicker();
 
     const host = document.createElement('div');
+    host.dataset.yurrrUi = '1';
     Object.assign(host.style, {
       position: 'absolute',
       zIndex: '2147483647',
@@ -295,7 +373,8 @@ const YurrrDetector = {
     let outsideClickTimer = null;
 
     const outsideClickHandler = (e) => {
-      if (!host.contains(e.target) && e.target !== field) {
+      const path = e.composedPath?.() || [e.target];
+      if (!path.includes(host) && !path.includes(field)) {
         this.hideEmailPicker();
       }
     };
@@ -361,7 +440,7 @@ const YurrrDetector = {
     if (!field || !email) return;
     const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     nativeSetter.call(field, email);
-    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     field.dispatchEvent(new Event('change', { bubbles: true }));
   },
 
@@ -443,8 +522,8 @@ const YurrrDetector = {
 
   captureSubmission(event) {
     if (!event.isTrusted || !this.isCredentialPageAllowed()) return;
-    const target = event.target;
-    if (target.closest?.('#yurrr-save-banner, #yurrr-overlay-host')) return;
+    const target = event.composedPath?.()[0] || event.target;
+    if (target.closest?.(this.UI_SELECTOR)) return;
     let scope;
     let fallbackField = null;
     let fallbackUsernameField = null;
@@ -462,7 +541,7 @@ const YurrrDetector = {
       scope = YurrrHeuristics.getForm(button);
       if (!scope) {
         // For JS forms, use the nearest shared container of the action and fields.
-        for (let parent = button.parentElement; parent; parent = parent.parentElement) {
+        for (let parent = button.parentNode; parent?.querySelectorAll; parent = parent.parentNode) {
           if (YurrrHeuristics.getVisiblePasswordFields(parent).some((field) => !YurrrHeuristics.getForm(field)) ||
               YurrrHeuristics.findStandaloneUsernameFields(parent).some((field) => !YurrrHeuristics.getForm(field))) {
             scope = parent;
@@ -487,22 +566,25 @@ const YurrrDetector = {
     void this.handleFormSubmit(scope, usernameField, passwordField);
   },
 
-  scanForms({ retryKnown = false } = {}) {
-    const passwordFields = YurrrHeuristics.getPasswordFields();
+  scanForms({ retryKnown = false, scope = document } = {}) {
+    const passwordFields = YurrrHeuristics.getPasswordFields(scope);
 
     for (const pwField of passwordFields) {
+      if (this.detectedPasswords.has(pwField) && !retryKnown &&
+          !(this.autofilledPasswordFields.has(pwField) && !pwField.value)) continue;
       const resolveUsernameField = () => YurrrHeuristics.findUsernameField(pwField);
       const initialUsernameField = resolveUsernameField();
       const form = YurrrHeuristics.getForm(pwField);
       const isNewPassword = YurrrHeuristics.isNewPasswordField(pwField) ||
         (YurrrHeuristics.isRegistrationForm(form) && !YurrrHeuristics.isCurrentPasswordField(pwField));
-      if (this.detectedForms.has(pwField)) {
+      if (this.detectedPasswords.has(pwField)) {
         if (!isNewPassword && (retryKnown ||
             (this.autofilledPasswordFields.has(pwField) && !pwField.value))) {
           void this.tryAutoFill(initialUsernameField, pwField, { allowAutofill: true });
         }
         continue;
       }
+      this.detectedPasswords.add(pwField);
       this.detectedForms.add(pwField);
       if (initialUsernameField) this.detectedForms.add(initialUsernameField);
 
@@ -531,7 +613,7 @@ const YurrrDetector = {
     }
 
     // Process standalone username fields for multi-step logins
-    const standaloneUsernames = YurrrHeuristics.findStandaloneUsernameFields();
+    const standaloneUsernames = YurrrHeuristics.findStandaloneUsernameFields(scope, this.detectedForms);
     for (const unField of standaloneUsernames) {
       if (this.detectedForms.has(unField)) continue;
       this.detectedForms.add(unField);
@@ -546,19 +628,20 @@ const YurrrDetector = {
       });
     }
 
-    this.scanAddressFields();
+    this.scanAddressFields(scope);
   },
 
   getAddressFieldScope(field) {
-    return field?.closest('fieldset') || field?.closest('form') || document;
+    return field?.closest('fieldset') || field?.closest('form') || field?.getRootNode?.() || document;
   },
 
-  scanAddressFields() {
+  scanAddressFields(scanScope = document) {
     if (!this.isCredentialPageAllowed()) return;
 
     const scopes = new Set();
-    const candidates = Array.from(document.querySelectorAll(YurrrHeuristics.addressFieldSelector || ''));
+    const candidates = Array.from(scanScope.querySelectorAll(YurrrHeuristics.addressFieldSelector || ''));
     for (const field of candidates) {
+      if (this.detectedAddressFields.has(field)) continue;
       if (!YurrrHeuristics.getAddressFieldKind(field)) continue;
       scopes.add(this.getAddressFieldScope(field));
     }
@@ -606,7 +689,7 @@ const YurrrDetector = {
 
     try {
       const addresses = await this.loadAddressesForFill();
-      if (!addresses.length || !targetField.isConnected || document.activeElement !== targetField) return false;
+      if (!addresses.length || !targetField.isConnected || (targetField.getRootNode?.() || document).activeElement !== targetField) return false;
       this.showAddressPicker(targetField, addresses, onClose);
       return true;
     } catch {
@@ -629,6 +712,7 @@ const YurrrDetector = {
     this.hideEmailPicker();
 
     const host = document.createElement('div');
+    host.dataset.yurrrUi = '1';
     Object.assign(host.style, {
       position: 'absolute',
       zIndex: '2147483647',
@@ -738,7 +822,8 @@ const YurrrDetector = {
     let outsideClickTimer = null;
 
     const outsideClickHandler = (e) => {
-      if (!host.contains(e.target) && e.target !== targetField) {
+      const path = e.composedPath?.() || [e.target];
+      if (!path.includes(host) && !path.includes(targetField)) {
         this.hideAddressPicker();
       }
     };
@@ -902,7 +987,7 @@ const YurrrDetector = {
       }
     }
 
-    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
     field.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   },
@@ -939,6 +1024,7 @@ const YurrrDetector = {
   },
 
   canAutofillWithCredential(usernameField, passwordField, credential, options = {}) {
+    if ((window.top && window.top !== window) || document.visibilityState === 'hidden') return false;
     if (!passwordField || !credential?.id) return false;
     if (!YurrrHeuristics.isPasswordField(passwordField)) return false;
     const form = YurrrHeuristics.getForm(passwordField);
@@ -1153,6 +1239,7 @@ const YurrrDetector = {
     const currentUser = preferredUsername || usernameField?.value || '';
 
     const host = document.createElement('div');
+    host.dataset.yurrrUi = '1';
     Object.assign(host.style, {
       position: 'absolute',
       zIndex: '2147483647',
@@ -1257,7 +1344,8 @@ const YurrrDetector = {
     let outsideClickTimer = null;
 
     const outsideClickHandler = (e) => {
-      if (!host.contains(e.target) && e.target !== targetField) {
+      const path = e.composedPath?.() || [e.target];
+      if (!path.includes(host) && !path.includes(targetField)) {
         this.hidePicker();
       }
     };
@@ -1354,7 +1442,7 @@ const YurrrDetector = {
   escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
-    return div.innerHTML;
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   },
 
   fillFields(usernameField, passwordField, credential) {
@@ -1362,13 +1450,13 @@ const YurrrDetector = {
 
     if (usernameField && credential.username) {
       nativeSetter.call(usernameField, credential.username);
-      usernameField.dispatchEvent(new Event('input', { bubbles: true }));
+      usernameField.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       usernameField.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     if (passwordField && credential.password) {
       nativeSetter.call(passwordField, credential.password);
-      passwordField.dispatchEvent(new Event('input', { bubbles: true }));
+      passwordField.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       passwordField.dispatchEvent(new Event('change', { bubbles: true }));
     }
   },
@@ -1478,8 +1566,11 @@ const YurrrDetector = {
 
     const username = typedUsername;
     const generation = ++this.submissionGeneration;
+    ++this.pendingCheckGeneration;
+    clearTimeout(this.pendingRetryTimer);
     if (this.savePromptTimer) clearTimeout(this.savePromptTimer);
     if (this.saveBannerCleanup) this.saveBannerCleanup(false);
+    if (this.saveStatusCleanup) this.saveStatusCleanup();
     const pendingPayload = {
       submissionId: crypto.randomUUID(),
       url,
@@ -1498,42 +1589,104 @@ const YurrrDetector = {
       if (generation !== this.submissionGeneration) return;
       if (!response?.stored) {
         this.disarmPendingCredentialsPromptReady();
+        this.showSaveStatus(response?.reason === 'locked'
+          ? 'Yurrr is locked. Unlock it, then submit the form again to save this password.'
+          : 'Yurrr could not capture this password. Please submit the form again.');
         return;
       }
     } catch {
-      if (generation === this.submissionGeneration) this.disarmPendingCredentialsPromptReady();
+      if (generation === this.submissionGeneration) {
+        this.disarmPendingCredentialsPromptReady();
+        this.showSaveStatus('Yurrr could not capture this password. Open the extension and try again.');
+      }
       return;
     }
 
     this.queuePostSubmitSavePrompt(url, pendingPayload.submissionId, form, passwordField);
+    void this.checkPendingCredentials({ submissionId: pendingPayload.submissionId });
   },
 
-  async checkPendingCredentials() {
+  async checkPendingCredentials({ manual = false, submissionId, attempt = 0 } = {}) {
     if (!this.isCredentialPageAllowed()) return;
-
+    const generation = ++this.pendingCheckGeneration;
+    clearTimeout(this.pendingRetryTimer);
     const domain = YurrrSiteScope.key(window.location.href);
 
     try {
       const response = await this.sendRuntimeMessage('CHECK_PENDING_CREDENTIALS', {
         domain,
         pageUrl: window.location.href,
+        manual,
+        submissionId,
       });
-
+      if (generation !== this.pendingCheckGeneration) return;
       if (response.hasPending && response.credentials.submissionId !== this.saveBannerSubmissionId) {
-        const { url, username, password } = response.credentials;
-        this.showSaveBanner(url, username, password, domain, {
-          submissionId: response.credentials.submissionId,
-          action: response.credentials.action,
-          entryId: response.credentials.entryId,
-          message: response.credentials.message,
+        const { url, username, password, ...options } = response.credentials;
+        this.showSaveBanner(url, username, password, domain, options);
+      } else if (response.available && !this.saveBannerCleanup) {
+        this.showSaveStatus('Submitted password captured. Review it if you want to save it.', {
+          submissionId: response.submissionId,
+          expiresAt: response.expiresAt,
+          actionLabel: 'Review',
+          action: () => this.checkPendingCredentials({ manual: true, submissionId: response.submissionId }),
         });
+      } else if (!response.hasPending && !response.available) {
+        if (this.saveStatusCleanup) this.saveStatusCleanup();
+        if (manual) this.showSaveStatus(response.reason === 'unchanged'
+          ? 'This password is already saved.'
+          : 'No pending password is available. Unlock Yurrr and submit the form again.');
       }
     } catch {
-      // Silent fail
+      if (generation !== this.pendingCheckGeneration) return;
+      if (attempt < 2) {
+        this.pendingRetryTimer = setTimeout(() => {
+          if (generation === this.pendingCheckGeneration) void this.checkPendingCredentials({ manual, submissionId, attempt: attempt + 1 });
+        }, [1000, 3000][attempt]);
+      } else {
+        this.showSaveStatus('Yurrr could not check the submitted password. Check the server connection and retry.', {
+          submissionId,
+          actionLabel: 'Retry',
+          action: () => this.checkPendingCredentials({ manual, submissionId }),
+        });
+      }
     }
   },
 
+  showSaveStatus(message, { action, actionLabel, submissionId, expiresAt } = {}) {
+    if (this.saveStatusCleanup) this.saveStatusCleanup();
+    const status = document.createElement('div');
+    status.id = 'yurrr-save-status';
+    status.setAttribute('role', 'status');
+    status.innerHTML = `<span><strong>Yurrr</strong> — ${this.escapeHtml(message)}</span>
+      ${action ? `<button class="yurrr-status-action" type="button">${this.escapeHtml(actionLabel)}</button>` : ''}
+      <button class="yurrr-status-dismiss" type="button" aria-label="Dismiss Yurrr message">×</button>`;
+    document.body.appendChild(status);
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      status.remove();
+      if (this.saveStatusCleanup === cleanup) this.saveStatusCleanup = null;
+    };
+    this.saveStatusCleanup = cleanup;
+    timer = setTimeout(cleanup, Math.max(0, Math.min(this.SAVE_BANNER_TTL_MS, (expiresAt || Date.now() + 60000) - Date.now())));
+    status.querySelector('.yurrr-status-action')?.addEventListener('click', (event) => {
+      if (event.isTrusted) { cleanup(); void action(); }
+    });
+    status.querySelector('.yurrr-status-dismiss').addEventListener('click', (event) => {
+      if (!event.isTrusted) return;
+      cleanup();
+      ++this.pendingCheckGeneration;
+      clearTimeout(this.pendingRetryTimer);
+      if (submissionId) {
+        clearTimeout(this.savePromptTimer);
+        this.disarmPendingCredentialsPromptReady();
+        void this.sendRuntimeMessage('CLEAR_PENDING_CREDENTIALS', { submissionId }).catch(() => {});
+      }
+    });
+  },
+
   showSaveBanner(url, username, password, domain = YurrrSiteScope.key(window.location.href), options = {}) {
+    if (this.saveStatusCleanup) this.saveStatusCleanup();
     if (this.saveBannerCleanup) {
       this.saveBannerCleanup(false);
     } else {
@@ -1544,13 +1697,76 @@ const YurrrDetector = {
     this.saveBannerSubmissionId = options.submissionId || null;
     const banner = document.createElement('div');
     banner.id = 'yurrr-save-banner';
-    const initialMessage = options.message || `Save password for ${domain}?`;
+    const chooseAccount = options.action === 'choose_account';
+    const initialMessage = chooseAccount ? 'Choose the account to update, or enter a username for a new login.'
+      : options.message || `Save password for ${domain}?`;
     const initialButtonLabel = options.action === 'update' ? 'Update' : 'Save';
-    banner.innerHTML = `
+    const shadow = banner.attachShadow({ mode: 'closed' });
+    shadow.innerHTML = `
+      <style>
+        .yurrr-banner-text {
+          font-size: 14px;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .yurrr-banner-text strong {
+          color: #d8b24c;
+        }
+        .yurrr-banner-text[data-variant='error'] {
+          color: #ffd3ce;
+        }
+        .yurrr-banner-actions {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+        label {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          font-size: 13px;
+        }
+        input,
+        select {
+          max-width: 180px;
+          padding: 5px;
+          color: #172024;
+          background: #eef3ef;
+          border: 1px solid #d8b24c;
+          border-radius: 4px;
+        }
+        .yurrr-banner-actions button {
+          padding: 6px 14px;
+          border: none;
+          border-radius: 4px;
+          font-size: 13px;
+          font-weight: 700;
+          cursor: pointer;
+        }
+        .yurrr-banner-actions button:disabled {
+          cursor: not-allowed;
+          opacity: 0.6;
+        }
+        .yurrr-banner-save {
+          background: #d8b24c;
+          color: #172024;
+        }
+        .yurrr-banner-dismiss {
+          background: #243039;
+          color: #eef3ef;
+        }
+      </style>
       <div class="yurrr-banner-text">
         <strong>Yurrr</strong> &mdash; ${this.escapeHtml(initialMessage)}
       </div>
       <div class="yurrr-banner-actions">
+        ${chooseAccount ? `<label>Account <select class="yurrr-banner-account">
+          <option value="">New login</option>${(options.accounts || []).map((account, index) =>
+            `<option value="${index}">${this.escapeHtml(account.username || '(no username)')}</option>`).join('')}
+        </select></label><label>Username <input class="yurrr-banner-username" type="text" autocomplete="off" value="${this.escapeHtml(username)}"></label>` : ''}
         <button class="yurrr-banner-save">${this.escapeHtml(initialButtonLabel)}</button>
         <button class="yurrr-banner-dismiss">Dismiss</button>
       </div>
@@ -1575,9 +1791,11 @@ const YurrrDetector = {
     };
     this.saveBannerCleanup = dismissBanner;
 
-    const textEl = banner.querySelector('.yurrr-banner-text');
-    const saveBtn = banner.querySelector('.yurrr-banner-save');
+    const textEl = shadow.querySelector('.yurrr-banner-text');
+    const saveBtn = shadow.querySelector('.yurrr-banner-save');
     const saveBtnOriginalLabel = saveBtn.textContent;
+    const accountSelect = shadow.querySelector('.yurrr-banner-account');
+    const usernameInput = shadow.querySelector('.yurrr-banner-username');
     let confirmUpdateEntryId = options.action === 'update' && options.entryId
       ? String(options.entryId)
       : null;
@@ -1591,10 +1809,23 @@ const YurrrDetector = {
       if (banner.parentNode) {
         dismissBanner();
       }
-    }, this.SAVE_BANNER_TTL_MS);
+    }, Math.max(0, Math.min(this.SAVE_BANNER_TTL_MS, (options.expiresAt || Date.now() + this.SAVE_BANNER_TTL_MS) - Date.now())));
+
+    accountSelect?.addEventListener('change', (event) => {
+      if (!event.isTrusted) return;
+      confirmUpdateEntryId = accountSelect.value === '' ? null
+        : String(options.accounts[Number(accountSelect.value)]?.id || '') || null;
+      usernameInput.disabled = Boolean(confirmUpdateEntryId);
+      saveBtn.textContent = confirmUpdateEntryId ? 'Update' : 'Save';
+    });
 
     saveBtn.addEventListener('click', async (e) => {
       if (!e.isTrusted) return;
+      if (usernameInput && !confirmUpdateEntryId && !usernameInput.value.trim()) {
+        setBannerMessage('Enter a username or select a saved account.', true);
+        usernameInput.focus();
+        return;
+      }
       saveBtn.disabled = true;
       setBannerMessage('Saving password...');
       try {
@@ -1602,7 +1833,7 @@ const YurrrDetector = {
           submissionId: options.submissionId,
           url,
           pageUrl: window.location.href,
-          username,
+          username: usernameInput?.value.trim() || username,
           password: pendingPassword,
           entryId: confirmUpdateEntryId,
           confirmUpdate: Boolean(confirmUpdateEntryId),
@@ -1635,7 +1866,7 @@ const YurrrDetector = {
       }
     });
 
-    banner.querySelector('.yurrr-banner-dismiss').addEventListener('click', (e) => {
+    shadow.querySelector('.yurrr-banner-dismiss').addEventListener('click', (e) => {
       if (!e.isTrusted) return;
       dismissBanner();
     });

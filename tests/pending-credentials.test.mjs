@@ -201,3 +201,70 @@ test('case-sensitive account names prefer the exact login and ambiguous case var
   assert.equal(saving.reason, 'ambiguous_username');
   assert.equal((await subject.send('CHECK_PENDING_CREDENTIALS', {})).reason, 'ambiguous_username');
 });
+
+test('manual review works without a transition and still requires a separate confirmed save', async () => {
+  const subject = await worker();
+  let saves = 0;
+  subject.api.createEntry = async () => { saves++; };
+  await subject.send('PENDING_CREDENTIALS', payload());
+  const automatic = await subject.send('CHECK_PENDING_CREDENTIALS', {});
+  assert.equal(automatic.hasPending, false);
+  assert.equal(automatic.available, true);
+  assert.equal(automatic.credentials, undefined);
+  const manual = await subject.send('CHECK_PENDING_CREDENTIALS', { manual: true, submissionId: 'attempt-one' });
+  assert.equal(manual.hasPending, true);
+  assert.equal(saves, 0);
+  assert.equal((await subject.send('CHECK_PENDING_CREDENTIALS', { manual: true, submissionId: 'old-attempt' })).hasPending, false);
+  assert.equal((await subject.send('FORM_SUBMITTED', payload())).saved, true);
+  assert.equal(saves, 1);
+});
+
+test('missing or ambiguous usernames retain pending credentials and offer only accounts from this site', async () => {
+  const subject = await worker();
+  const entries = ['alice', 'bob'].map((username) => ({ id: username, username, website_url: 'https://example.com' }));
+  subject.api.listEntries = async () => [...entries, { id: 'foreign', username: 'other', website_url: 'https://other.test' }];
+  subject.api.getEntry = async (id) => ({ ...entries.find((entry) => entry.id === id), password: 'old' });
+  let update;
+  subject.api.updateEntry = async (...args) => { update = args; };
+  await subject.send('PENDING_CREDENTIALS', payload('missing', ''));
+  const result = await subject.send('CHECK_PENDING_CREDENTIALS', { manual: true });
+  assert.equal(result.credentials.action, 'choose_account');
+  assert.deepEqual(Array.from(result.credentials.accounts, (item) => item.id), ['alice', 'bob']);
+  assert.equal((await subject.getPendingCredentials('example.com', sender())).submissionId, 'missing');
+  const rejected = await subject.send('FORM_SUBMITTED', { ...payload('missing', ''), entryId: 'foreign', confirmUpdate: true });
+  assert.equal(rejected.reason, 'entry_not_found');
+  assert.equal(update, undefined);
+  const saved = await subject.send('FORM_SUBMITTED', { ...payload('missing', ''), entryId: 'bob', confirmUpdate: true });
+  assert.equal(saved.updated, true);
+  assert.equal(update[0], 'bob');
+});
+
+test('a missing username can be supplied during review to create a new login', async () => {
+  const subject = await worker();
+  let created;
+  subject.api.createEntry = async (value) => { created = value; };
+  await subject.send('PENDING_CREDENTIALS', payload('missing', ''));
+  const result = await subject.send('CHECK_PENDING_CREDENTIALS', { manual: true });
+  assert.equal(result.credentials.action, 'choose_account');
+  assert.equal((await subject.send('FORM_SUBMITTED', payload('missing', 'new-user'))).saved, true);
+  assert.equal(created.username, 'new-user');
+});
+
+test('network failures retain the pending save and locking reports why capture was refused', async () => {
+  const subject = await worker();
+  await subject.send('PENDING_CREDENTIALS', payload());
+  subject.api.listEntries = async () => { throw new Error('offline'); };
+  await assert.rejects(subject.send('CHECK_PENDING_CREDENTIALS', { manual: true }), /offline/);
+  assert.equal((await subject.getPendingCredentials('example.com', sender())).submissionId, 'attempt-one');
+  await subject.session.forceLocalLock();
+  assert.equal((await subject.send('PENDING_CREDENTIALS', payload())).reason, 'locked');
+});
+
+test('automatic credential requests from child frames and inactive tabs are denied before reading a secret', async () => {
+  const subject = await worker();
+  subject.api.getEntry = () => { throw new Error('Must not read a secret'); };
+  for (const source of [sender(1, 2), { ...sender(), tab: { id: 1, active: false } }]) {
+    const result = await subject.send('GET_CREDENTIAL_FOR_AUTOFILL', { id: 'one' }, source);
+    assert.equal(result.credential, null);
+  }
+});

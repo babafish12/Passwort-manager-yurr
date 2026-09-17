@@ -8,7 +8,7 @@ const YurrrHeuristics = {
   knownPasswordFields: new WeakSet(),
 
   getForm(field) {
-    return field?.form || field?.closest('form, [role="form"]') || null;
+    return field?.form || field?.closest?.('form, [role="form"]') || null;
   },
 
   getInputs(scope = document) {
@@ -38,8 +38,8 @@ const YurrrHeuristics = {
   },
 
   // Find standalone username/email fields when no password field is present
-  findStandaloneUsernameFields(scope = document) {
-    const allInputs = this.getInputs(scope).filter((field) => field.matches(this.inputSelector));
+  findStandaloneUsernameFields(scope = document, excluded = null) {
+    const allInputs = this.getInputs(scope).filter((field) => !excluded?.has(field) && field.matches(this.inputSelector));
     const scored = [];
 
     for (const el of allInputs) {
@@ -58,7 +58,7 @@ const YurrrHeuristics = {
   findUsernameField(passwordField, submissionScope = null) {
     if (!passwordField) return null;
     const form = this.getForm(passwordField);
-    const scope = submissionScope || form || document;
+    const scope = submissionScope || form || passwordField.getRootNode?.() || document;
     const allInputs = this.getInputs(scope);
     const inputs = allInputs.filter((field) => field.matches(this.inputSelector));
     const pwIndex = allInputs.indexOf(passwordField);
@@ -91,7 +91,7 @@ const YurrrHeuristics = {
   },
 
   findRegistrationEmailField(form, passwordField = null) {
-    const scope = form || document;
+    const scope = form || passwordField?.getRootNode?.() || document;
     const fields = this.getInputs(scope).filter((field) => field.matches(this.inputSelector));
     let best = null;
     let bestScore = -1;
