@@ -427,6 +427,11 @@ restart or extension reload. Decrypted popup data is never cached in
 `chrome.storage.local`, sync storage, or the HTTP cache. Autofill retains its
 separate metadata cache and page-scoped credential requests.
 
+Password lists render 50 rows per page; search still covers the entire vault.
+Only icons near the visible part of the list are loaded, with at most four icon
+jobs running at once. Concurrent metadata checks for the same website share one
+server request, and list queries do not load encrypted passwords or notes.
+
 Each popup cache record expires five minutes after its last successful server
 fetch; reading it locally does not extend that time. Opening or navigating the
 popup starts a background refresh when the relevant record is at least 30
@@ -492,6 +497,14 @@ offered after navigation or after the submitted password field disappears for at
 least one second; same-page transitions are observed for up to 30 seconds.
 An unchanged saved password does not produce another save prompt.
 
+After capture, a **Review** message also lets you inspect a submitted password
+when the page keeps its form visible. A detected transition is only a hint;
+confirm Save or Update after checking the result of the website's submission.
+If the username is missing or several accounts match, the banner lets you choose
+the account to update or enter a username for a new login. Connection failures
+are retried twice before showing a Retry action. When Yurrr is locked, it explains
+that you need to unlock it and submit again; it does not retain that password.
+
 The pending credential is scoped to the tab, frame and website and kept in
 `chrome.storage.session` until saved, dismissed, replaced or expired after five
 minutes. It survives service-worker suspension, and is cleared on lock, browser
@@ -501,11 +514,14 @@ or Update in the banner.
 
 Detection currently covers ordinary page inputs, including dynamically replaced
 fields, password reveal toggles, and controls connected with `form="..."`.
-Nested iframe logins and fields inside Shadow DOM are not supported. Websites
-that keep the same visible form after success, use unrecognized custom controls,
-or require a new username without exposing an input may still need manual entry
-through the popup. Public HTTP pages are intentionally excluded from credential
-capture and autofill.
+Open Shadow Roots and HTTP(S) iframe documents are supported. Frame credentials
+are matched against the frame's own website; frames require a manual credential
+selection and cannot automatically fill passwords. Closed Shadow Roots, opaque
+frames such as `about:blank`/`srcdoc`, and custom controls without ordinary inputs
+still need manual entry through the popup. A Shadow Root attached later to an
+existing host is discovered on field focus or when the extension refreshes the
+page. Public HTTP pages are intentionally excluded from credential capture and
+autofill.
 
 ### Generate a password
 
@@ -534,6 +550,9 @@ When enabled, the popup tries icons in this order:
    `rel="icon"`, Apple touch icons, web manifests, SVG icons, PNG/WebP/ICO
    icons, and common paths such as `/favicon.ico`.
 3. The server's cached `/api/v1/favicons/{domain}` response.
+
+Loading stops at the first successful source. A known cached server icon is tried
+before website discovery, and obsolete queued jobs are skipped after navigation.
 
 The server does not fetch favicons from websites by default. Server-side
 favicon fetching is controlled separately with
@@ -679,6 +698,12 @@ The script:
 7. Starts the service again.
 8. Prints service status.
 
+If a backup or later update step fails after stopping a previously active service,
+the exit handler attempts to start it again and preserves the failed exit status.
+If recovery also fails, it prints the manual start command. This is a recovery
+attempt, not a binary rollback; an uncatchable termination such as SIGKILL cannot
+run the handler.
+
 ### Update the extension
 
 After pulling new code on the browser machine:
@@ -730,8 +755,14 @@ extension messaging API. Use synthetic credentials only. The scenarios in
 CLI's `run-code` command. This checks browser DOM/events; the service worker and
 server are covered separately by the Node and Rust tests.
 
+`tests/fixtures/performance-scenarios.js` uses the same setup to check that unrelated
+text updates cause no form scans, replacement fields are detected, password lists
+stay bounded, and search finds entries beyond the currently rendered page. It
+also returns local render timings for 100, 1,000 and 5,000 synthetic entries.
+
 See [the September 2026 review](docs/review-2026-09-10.md) for findings and remaining
-compatibility limits.
+compatibility limits, and the [September 17 follow-up](docs/review-2026-09-17.md)
+for the implemented improvements and validation.
 
 ### Check whitespace in the Git diff
 
